@@ -1,0 +1,26 @@
+{
+  "name": "VibeColorizer",
+  "image": "image.jpg",
+  "banner": "banner.jpg",
+  "libraryLogo": "",
+  "author": "BackUndoTap",
+  "description": "Адаптивно меняет цвет анимации «Моей волны» под обложку трека",
+  "version": "1.0.0",
+  "css": "style.css",
+  "script": "script.js",
+  "type": "script",
+  "tags": [
+    "vibe",
+    "wave",
+    "color"
+  ],
+  "dependencies": [],
+  "conflictsWith": [],
+  "allowedUrls": [
+    "https://avatars.yandex.net"
+  ],
+  "supportedVersions": [],
+  "id": "vibecolorizer-final-001",
+  "installSource": "local",
+  "fromPext": false
+}
