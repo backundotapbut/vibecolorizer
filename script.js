@@ -39,6 +39,9 @@
     const animDuration = 400;
     let animStartValues = { hue: 0, saturate: 1, brightness: 1 };
 
+    // ─── Храним ожидаемую строку фильтра ──────────────────────────────────
+    let lastAppliedFilterString = '';
+
     // ─── Утилиты для настроек ──────────────────────────────────────────────
     function unwrap(val, fallback) {
         if (val && typeof val === 'object' && 'value' in val) return val.value;
@@ -343,6 +346,7 @@
         const filter = `hue-rotate(${values.hue}deg) saturate(${values.saturate}) brightness(${values.brightness})`;
         canvas.style.filter = filter;
         canvas.style.overflow = 'hidden';
+        lastAppliedFilterString = filter;
     }
 
     function clearFilter() {
@@ -350,6 +354,7 @@
         if (canvas) {
             canvas.style.filter = 'none';
             canvas.style.overflow = 'hidden';
+            lastAppliedFilterString = 'none';
             log('Фильтр сброшен');
         }
     }
@@ -384,6 +389,9 @@
         if (targetValues.hue === currentFilterValues.hue &&
             targetValues.saturate === currentFilterValues.saturate &&
             targetValues.brightness === currentFilterValues.brightness) {
+            if (lastAppliedFilterString === 'none') {
+                applyFilterValues(targetValues);
+            }
             return;
         }
 
@@ -663,7 +671,7 @@
             }, 5000);
         }
 
-        // ─── ПОСТОЯННЫЙ НАБЛЮДАТЕЛЬ ЗА ПОЯВЛЕНИЕМ CANVAS ──────────────
+        // ─── Наблюдатель за появлением canvas внутри VibePage_root ──────
         let canvasObserver = null;
         const root = document.querySelector('[class*="VibePage_root"]');
         if (root) {
@@ -719,9 +727,6 @@
                                 }
                                 reapplyFilter();
                             }
-                            if (canvasObserver && !canvasObserver._connected) {
-                                canvasObserver.observe(rootEl, { childList: true, subtree: true });
-                            }
                         }
                     } catch (e) {}
                 }, 800);
@@ -738,7 +743,6 @@
             return;
         }
         window.pulsesyncApi?._waitForPlayer?.(() => {
-            // Основной интервал для смены трека и паузы
             setInterval(() => {
                 try {
                     const track = window.pulsesyncApi?.getCurrentTrack();
@@ -748,20 +752,6 @@
                     checkPlayState();
                 } catch (e) {}
             }, 200);
-
-            // ─── ДОПОЛНИТЕЛЬНЫЙ ИНТЕРВАЛ ДЛЯ ПРОВЕРКИ ФИЛЬТРА ──────────
-            // Проверяем каждые 300 мс, не сбросился ли фильтр
-            setInterval(() => {
-                if (!isReady) return;
-                const canvas = getCanvas();
-                if (!canvas) return;
-                const currentFilter = canvas.style.filter || 'none';
-                // Если фильтр сброшен (none), но у нас есть сохранённый цвет
-                if (currentFilter === 'none' && window._vibeCurrentTargetColor) {
-                    log('Фильтр был сброшен (обнаружено в интервале), переприменяем');
-                    applyColorToCanvas(window._vibeCurrentTargetColor);
-                }
-            }, 300);
         });
     }
 
