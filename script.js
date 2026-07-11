@@ -2,8 +2,9 @@
     'use strict';
     const ADDON_NAME = 'VibeColorizer';
 
+    // ─── Логирование ──────────────────────────────────────────────────────────
     function log(...args) {
-        console.log(`[${ADDON_NAME}]`, ...args);
+        console.debug(`[${ADDON_NAME}]`, ...args);
     }
     function warn(...args) {
         console.warn(`[${ADDON_NAME}]`, ...args);
@@ -23,23 +24,24 @@
     };
 
     let settings = { ...DEFAULTS };
-    let lastTrackId = null;
     let isReady = false;
     let isPaused = false;
+    let lastTrackId = null;
+    let currentTargetColor = null; // объединяем window._vibeCurrentTargetColor и lastAppliedColor
 
     const coverCache = new Map();
-    let currentPreloadId = 0;
+    let preloadId = 0;
 
     // ─── Анимационные переменные ──────────────────────────────────────────
-    let currentFilterValues = { hue: 0, saturate: 1, brightness: 1 };
-    let targetFilterValues = { hue: 0, saturate: 1, brightness: 1 };
-    let animating = false;
-    let animFrameId = null;
-    let animStartTime = 0;
     const animDuration = 400;
-    let animStartValues = { hue: 0, saturate: 1, brightness: 1 };
-
-    // ─── Храним ожидаемую строку фильтра ──────────────────────────────────
+    let animState = {
+        current: { hue: 0, saturate: 1, brightness: 1 },
+        target: { hue: 0, saturate: 1, brightness: 1 },
+        start: { hue: 0, saturate: 1, brightness: 1 },
+        startTime: 0,
+        active: false,
+        frameId: null
+    };
     let lastAppliedFilterString = '';
 
     // ─── Утилиты для настроек ──────────────────────────────────────────────
@@ -130,7 +132,7 @@
         return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
     }
 
-    // ─── Улучшенное извлечение доминирующего цвета ──────────────────────
+    // ─── Извлечение доминирующего цвета ──────────────────────────────────
     function extractDominantColorFromImage(img) {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
@@ -163,9 +165,7 @@
                 b += data[i + 2];
                 count++;
             }
-            const avg = { r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) };
-            log('Преобладающий цвет обложки (усреднение):', avg);
-            return avg;
+            return { r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) };
         }
 
         pixels.sort((a, b) => b.sat - a.sat);
@@ -179,16 +179,14 @@
             gSum += p.g;
             bSum += p.b;
         }
-        const dominantColor = {
+        return {
             r: Math.round(rSum / topPixels.length),
             g: Math.round(gSum / topPixels.length),
             b: Math.round(bSum / topPixels.length)
         };
-        log('Преобладающий цвет обложки (RGB):', dominantColor);
-        return dominantColor;
     }
 
-    // ─── Получение исходного цвета волны из CSS-переменных ──────────────
+    // ─── Получение корневого элемента и цвета волны из CSS ──────────────
     function getRootElement() {
         return document.querySelector('.CommonLayout_root__WC_W1') ||
                document.querySelector('[class*="CommonLayout_root"]');
@@ -215,7 +213,6 @@
             if (!rgb) {
                 return { r: 0, g: 191, b: 255 };
             }
-            log('Исходный цвет волны из CSS:', rgb);
             return rgb;
         } catch (e) {
             return { r: 0, g: 191, b: 255 };
@@ -256,7 +253,7 @@
             intensity = intensity * 0.5;
         }
 
-        // ─── Адаптивная яркость и насыщенность ──────────────────────────
+        // Адаптивная яркость и насыщенность
         if (settings.adaptiveBrightness) {
             const deltaLightness = (targetLightness - 0.5) * 0.8;
             if (targetLightness > 0.5) {
@@ -268,14 +265,14 @@
             }
         }
 
-        // ─── Спецобработка нейтральных обложек ─────────────────────────
+        // Спецобработка нейтральных обложек
         if (isWhite) {
             if (settings.specialNeutralHandling) {
-                finalBright = Math.min(2.0, finalBright * 1.4);
-                finalSaturate = Math.min(0.3, settings.saturation * 0.3);
+                finalBright = Math.min(2.0, finalBright * 2.0);
+                finalSaturate = Math.min(0.2, settings.saturation * 0.2);
                 finalHue = 0;
             } else {
-                return { hue: 0, saturate: 1, brightness: 1 };
+                return defaultValues;
             }
         } else if (isBlack) {
             if (settings.specialNeutralHandling) {
@@ -283,19 +280,19 @@
                 finalSaturate = 0.1;
                 finalHue = 0;
             } else {
-                return { hue: 0, saturate: 1, brightness: 1 };
+                return defaultValues;
             }
         } else if (isNeutral) {
             if (settings.specialNeutralHandling) {
                 finalBright = Math.min(1.4, Math.max(0.6, finalBright * (0.8 + targetLightness * 0.4)));
-                finalSaturate = Math.min(0.3, settings.saturation * 0.3);
+                finalSaturate = Math.min(0.15, settings.saturation * 0.15);
                 if (absDelta > 5 && absDelta < 45) {
                     finalHue = deltaH * 0.1;
                 } else {
                     finalHue = 0;
                 }
             } else {
-                return { hue: 0, saturate: 1, brightness: 1 };
+                return defaultValues;
             }
         } else {
             finalHue = deltaH * intensity;
@@ -308,7 +305,7 @@
         return { hue: finalHue, saturate: finalSaturate, brightness: finalBright };
     }
 
-    // ─── Поиск canvas ──────────────────────────────────────────────────────
+    // ─── Работа с canvas ──────────────────────────────────────────────────
     function findCanvas() {
         const root = document.querySelector('[class*="VibePage_root"]');
         if (root) {
@@ -316,9 +313,7 @@
             if (canvas) return canvas;
         }
         const anyCanvas = document.querySelector('canvas');
-        if (anyCanvas) {
-            return anyCanvas;
-        }
+        if (anyCanvas) return anyCanvas;
         const animRoot = document.querySelector('[class*="VibeWidgetAnimation_root"]');
         if (animRoot) {
             const canvas = animRoot.querySelector('canvas');
@@ -359,116 +354,132 @@
         }
     }
 
-    // ─── Плавная анимация ──────────────────────────────────────────────────
-    function animateFilter(targetValues) {
+    function shouldFilterBeCleared() {
+        return isPaused && settings.useFilterOnPause;
+    }
+
+    // ─── Плавная анимация фильтра ──────────────────────────────────────────
+    function startAnimation(targetValues) {
         const canvas = getCanvas();
         if (!canvas) return;
 
-        if (isPaused && settings.useFilterOnPause) {
+        // Если нужно сбросить фильтр
+        if (shouldFilterBeCleared()) {
             clearFilter();
-            currentFilterValues = { hue: 0, saturate: 1, brightness: 1 };
-            if (animFrameId) {
-                cancelAnimationFrame(animFrameId);
-                animFrameId = null;
+            animState.current = { hue: 0, saturate: 1, brightness: 1 };
+            if (animState.frameId) {
+                cancelAnimationFrame(animState.frameId);
+                animState.frameId = null;
             }
-            animating = false;
+            animState.active = false;
             return;
         }
 
         if (!settings.enabled || !targetValues) {
             clearFilter();
-            currentFilterValues = { hue: 0, saturate: 1, brightness: 1 };
-            if (animFrameId) {
-                cancelAnimationFrame(animFrameId);
-                animFrameId = null;
+            animState.current = { hue: 0, saturate: 1, brightness: 1 };
+            if (animState.frameId) {
+                cancelAnimationFrame(animState.frameId);
+                animState.frameId = null;
             }
-            animating = false;
+            animState.active = false;
             return;
         }
 
-        if (targetValues.hue === currentFilterValues.hue &&
-            targetValues.saturate === currentFilterValues.saturate &&
-            targetValues.brightness === currentFilterValues.brightness) {
+        const current = animState.current;
+        if (targetValues.hue === current.hue &&
+            targetValues.saturate === current.saturate &&
+            targetValues.brightness === current.brightness) {
             if (lastAppliedFilterString === 'none') {
                 applyFilterValues(targetValues);
             }
             return;
         }
 
-        if (animFrameId) {
-            cancelAnimationFrame(animFrameId);
-            animFrameId = null;
+        if (animState.frameId) {
+            cancelAnimationFrame(animState.frameId);
+            animState.frameId = null;
         }
 
-        animStartValues = { ...currentFilterValues };
-        targetFilterValues = { ...targetValues };
-        animStartTime = performance.now();
-        animating = true;
+        animState.start = { ...current };
+        animState.target = { ...targetValues };
+        animState.startTime = performance.now();
+        animState.active = true;
 
         function step(time) {
-            const elapsed = time - animStartTime;
+            // Проверяем, не нужно ли сбросить фильтр (пауза)
+            if (shouldFilterBeCleared()) {
+                clearFilter();
+                animState.current = { hue: 0, saturate: 1, brightness: 1 };
+                if (animState.frameId) {
+                    cancelAnimationFrame(animState.frameId);
+                    animState.frameId = null;
+                }
+                animState.active = false;
+                return;
+            }
+
+            const elapsed = time - animState.startTime;
             const progress = Math.min(1, elapsed / animDuration);
             const eased = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
 
             const current = {
-                hue: animStartValues.hue + (targetFilterValues.hue - animStartValues.hue) * eased,
-                saturate: animStartValues.saturate + (targetFilterValues.saturate - animStartValues.saturate) * eased,
-                brightness: animStartValues.brightness + (targetFilterValues.brightness - animStartValues.brightness) * eased
+                hue: animState.start.hue + (animState.target.hue - animState.start.hue) * eased,
+                saturate: animState.start.saturate + (animState.target.saturate - animState.start.saturate) * eased,
+                brightness: animState.start.brightness + (animState.target.brightness - animState.start.brightness) * eased
             };
 
             applyFilterValues(current);
 
             if (progress >= 1) {
-                currentFilterValues = { ...targetFilterValues };
-                animating = false;
-                animFrameId = null;
+                animState.current = { ...animState.target };
+                animState.active = false;
+                animState.frameId = null;
                 return;
             }
 
-            animFrameId = requestAnimationFrame(step);
+            animState.frameId = requestAnimationFrame(step);
         }
 
-        animFrameId = requestAnimationFrame(step);
+        animState.frameId = requestAnimationFrame(step);
     }
 
     function applyColorToCanvas(targetColor) {
         const canvas = getCanvas();
         if (!canvas) return;
 
-        if (isPaused && settings.useFilterOnPause) {
+        if (shouldFilterBeCleared()) {
             clearFilter();
-            currentFilterValues = { hue: 0, saturate: 1, brightness: 1 };
-            if (animFrameId) {
-                cancelAnimationFrame(animFrameId);
-                animFrameId = null;
+            animState.current = { hue: 0, saturate: 1, brightness: 1 };
+            if (animState.frameId) {
+                cancelAnimationFrame(animState.frameId);
+                animState.frameId = null;
             }
-            animating = false;
+            animState.active = false;
             return;
         }
 
         if (!settings.enabled || !targetColor) {
             clearFilter();
-            currentFilterValues = { hue: 0, saturate: 1, brightness: 1 };
-            if (animFrameId) {
-                cancelAnimationFrame(animFrameId);
-                animFrameId = null;
+            animState.current = { hue: 0, saturate: 1, brightness: 1 };
+            if (animState.frameId) {
+                cancelAnimationFrame(animState.frameId);
+                animState.frameId = null;
             }
-            animating = false;
+            animState.active = false;
             return;
         }
 
         const targetValues = computeFilterValues(targetColor);
-        animateFilter(targetValues);
+        startAnimation(targetValues);
     }
 
-    // ─── Переприменение фильтра ──────────────────────────────────────────
     function reapplyFilter() {
         if (!isReady) return;
         try {
             const track = window.pulsesyncApi?.getCurrentTrack();
-            if (track && window._vibeCurrentTargetColor) {
-                const color = window._vibeCurrentTargetColor;
-                applyColorToCanvas(color);
+            if (track && currentTargetColor) {
+                applyColorToCanvas(currentTargetColor);
                 log('Фильтр переприменён (reapplyFilter)');
             } else if (track) {
                 processTrack(track, true);
@@ -500,9 +511,9 @@
             const img = new Image();
             img.crossOrigin = 'anonymous';
             img.referrerPolicy = 'no-referrer';
-            const id = ++currentPreloadId;
+            const id = ++preloadId;
             img.onload = () => {
-                if (id !== currentPreloadId) return;
+                if (id !== preloadId) return;
                 try {
                     const color = extractDominantColorFromImage(img);
                     if (color) {
@@ -516,7 +527,7 @@
                 }
             };
             img.onerror = () => {
-                if (id !== currentPreloadId) return;
+                if (id !== preloadId) return;
                 callback(null);
             };
             img.src = url;
@@ -540,43 +551,30 @@
 
         if (applyTimeout) clearTimeout(applyTimeout);
 
+        const apply = (color) => {
+            if (color) {
+                currentTargetColor = color;
+                applyColorToCanvas(color);
+            } else {
+                currentTargetColor = null;
+                applyColorToCanvas(null);
+            }
+        };
+
         if (immediate) {
-            loadCoverColor(track, (color) => {
-                try {
-                    if (color) {
-                        window._vibeCurrentTargetColor = color;
-                        applyColorToCanvas(color);
-                    } else {
-                        window._vibeCurrentTargetColor = null;
-                        applyColorToCanvas(null);
-                    }
-                } catch (e) {}
-            });
+            loadCoverColor(track, apply);
             return;
         }
 
         applyTimeout = setTimeout(() => {
-            try {
-                loadCoverColor(track, (color) => {
-                    try {
-                        if (color) {
-                            window._vibeCurrentTargetColor = color;
-                            applyColorToCanvas(color);
-                        } else {
-                            window._vibeCurrentTargetColor = null;
-                            applyColorToCanvas(null);
-                        }
-                    } catch (e) {}
-                });
-            } catch (e) {}
+            loadCoverColor(track, apply);
             applyTimeout = null;
-        }, 100);
+        }, 50);
     }
 
-    // ─── Предзагрузка ──────────────────────────────────────────────────────
     function preloadNextTrack() {
+        if (!settings.preload) return;
         try {
-            if (!settings.preload) return;
             const queue = window.pulsesyncApi?.getQueue?.();
             if (!queue || !Array.isArray(queue) || queue.length < 2) return;
             const nextTrack = queue[1];
@@ -588,7 +586,6 @@
         } catch (e) {}
     }
 
-    // ─── Обновление при смене трека ──────────────────────────────────────
     function onTrackChanged() {
         try {
             const track = window.pulsesyncApi?.getCurrentTrack();
@@ -601,7 +598,6 @@
         } catch (e) {}
     }
 
-    // ─── Проверка паузы ──────────────────────────────────────────────────
     function checkPlayState() {
         try {
             if (!window.pulsesyncApi) return;
@@ -613,18 +609,30 @@
                     if (paused) {
                         if (settings.useFilterOnPause) {
                             clearFilter();
+                            animState.current = { hue: 0, saturate: 1, brightness: 1 };
+                            if (animState.frameId) {
+                                cancelAnimationFrame(animState.frameId);
+                                animState.frameId = null;
+                            }
+                            animState.active = false;
                         } else {
+                            // Если настройка отключена, сохраняем фильтр
                             const track = window.pulsesyncApi?.getCurrentTrack();
-                            if (track && window._vibeCurrentTargetColor) {
-                                applyColorToCanvas(window._vibeCurrentTargetColor);
+                            if (track && currentTargetColor) {
+                                applyColorToCanvas(currentTargetColor);
                             } else if (track) {
                                 processTrack(track, true);
                             }
                         }
                     } else {
+                        // Возобновление
                         const track = window.pulsesyncApi?.getCurrentTrack();
                         if (track) {
-                            processTrack(track, true);
+                            if (currentTargetColor) {
+                                applyColorToCanvas(currentTargetColor);
+                            } else {
+                                processTrack(track, true);
+                            }
                         } else {
                             applyColorToCanvas(null);
                         }
@@ -675,15 +683,9 @@
         let canvasObserver = null;
         const root = document.querySelector('[class*="VibePage_root"]');
         if (root) {
-            canvasObserver = new MutationObserver((mutations) => {
-                for (const mutation of mutations) {
-                    for (const node of mutation.addedNodes) {
-                        if (node.nodeName === 'CANVAS') {
-                            log('Canvas пересоздан, переприменяем фильтр');
-                            reapplyFilter();
-                            return;
-                        }
-                    }
+            canvasObserver = new MutationObserver(() => {
+                if (findCanvas()) {
+                    reapplyFilter();
                 }
             });
             canvasObserver.observe(root, { childList: true, subtree: true });
@@ -692,15 +694,9 @@
                 const r = document.querySelector('[class*="VibePage_root"]');
                 if (r) {
                     rootObserver.disconnect();
-                    canvasObserver = new MutationObserver((mutations) => {
-                        for (const mutation of mutations) {
-                            for (const node of mutation.addedNodes) {
-                                if (node.nodeName === 'CANVAS') {
-                                    log('Canvas пересоздан (после появления root), переприменяем фильтр');
-                                    reapplyFilter();
-                                    return;
-                                }
-                            }
+                    canvasObserver = new MutationObserver(() => {
+                        if (findCanvas()) {
+                            reapplyFilter();
                         }
                     });
                     canvasObserver.observe(r, { childList: true, subtree: true });
@@ -717,16 +713,8 @@
                 lastUrl = url;
                 setTimeout(() => {
                     try {
-                        const rootEl = document.querySelector('[class*="VibePage_root"]');
-                        if (rootEl) {
-                            log('Обнаружен переход на страницу волны');
-                            const c = getCanvas();
-                            if (c) {
-                                if (!isReady) {
-                                    isReady = true;
-                                }
-                                reapplyFilter();
-                            }
+                        if (document.querySelector('[class*="VibePage_root"]')) {
+                            reapplyFilter();
                         }
                     } catch (e) {}
                 }, 800);
@@ -751,7 +739,7 @@
                     }
                     checkPlayState();
                 } catch (e) {}
-            }, 200);
+            }, 100);
         });
     }
 
