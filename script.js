@@ -27,10 +27,13 @@
     let isReady = false;
     let isPaused = false;
     let lastTrackId = null;
-    let currentTargetColor = null; // объединяем window._vibeCurrentTargetColor и lastAppliedColor
+    let currentTargetColor = null;
 
     const coverCache = new Map();
+    const MAX_CACHE_SIZE = 150;
     let preloadId = 0;
+    let activePreloads = 0;
+    const MAX_PRELOADS = 2;
 
     // ─── Анимационные переменные ──────────────────────────────────────────
     const animDuration = 400;
@@ -51,31 +54,27 @@
         return val !== undefined ? val : fallback;
     }
 
+    function applySettings(newS) {
+        settings.enabled = unwrap(newS.enabled, DEFAULTS.enabled);
+        settings.intensity = unwrap(newS.intensity, DEFAULTS.intensity);
+        settings.saturation = unwrap(newS.saturation, DEFAULTS.saturation);
+        settings.brightness = unwrap(newS.brightness, DEFAULTS.brightness);
+        settings.adaptiveBrightness = unwrap(newS.adaptiveBrightness, DEFAULTS.adaptiveBrightness);
+        settings.preload = unwrap(newS.preload, DEFAULTS.preload);
+        settings.specialNeutralHandling = unwrap(newS.specialNeutralHandling, DEFAULTS.specialNeutralHandling);
+        settings.saturationPreference = unwrap(newS.saturationPreference, DEFAULTS.saturationPreference);
+        settings.useFilterOnPause = unwrap(newS.useFilterOnPause, DEFAULTS.useFilterOnPause);
+    }
+
     function loadSettings() {
         try {
             const store = window.pulsesyncApi?.getSettings(ADDON_NAME);
             if (store) {
                 const s = store.getCurrent() || {};
-                settings.enabled = unwrap(s.enabled, DEFAULTS.enabled);
-                settings.intensity = unwrap(s.intensity, DEFAULTS.intensity);
-                settings.saturation = unwrap(s.saturation, DEFAULTS.saturation);
-                settings.brightness = unwrap(s.brightness, DEFAULTS.brightness);
-                settings.adaptiveBrightness = unwrap(s.adaptiveBrightness, DEFAULTS.adaptiveBrightness);
-                settings.preload = unwrap(s.preload, DEFAULTS.preload);
-                settings.specialNeutralHandling = unwrap(s.specialNeutralHandling, DEFAULTS.specialNeutralHandling);
-                settings.saturationPreference = unwrap(s.saturationPreference, DEFAULTS.saturationPreference);
-                settings.useFilterOnPause = unwrap(s.useFilterOnPause, DEFAULTS.useFilterOnPause);
+                applySettings(s);
                 store.onChange((newS) => {
                     try {
-                        settings.enabled = unwrap(newS.enabled, DEFAULTS.enabled);
-                        settings.intensity = unwrap(newS.intensity, DEFAULTS.intensity);
-                        settings.saturation = unwrap(newS.saturation, DEFAULTS.saturation);
-                        settings.brightness = unwrap(newS.brightness, DEFAULTS.brightness);
-                        settings.adaptiveBrightness = unwrap(newS.adaptiveBrightness, DEFAULTS.adaptiveBrightness);
-                        settings.preload = unwrap(newS.preload, DEFAULTS.preload);
-                        settings.specialNeutralHandling = unwrap(newS.specialNeutralHandling, DEFAULTS.specialNeutralHandling);
-                        settings.saturationPreference = unwrap(newS.saturationPreference, DEFAULTS.saturationPreference);
-                        settings.useFilterOnPause = unwrap(newS.useFilterOnPause, DEFAULTS.useFilterOnPause);
+                        applySettings(newS);
                         if (isReady) {
                             const track = window.pulsesyncApi?.getCurrentTrack();
                             if (track) processTrack(track, true);
@@ -87,6 +86,15 @@
         } catch (e) {
             log('Ошибка загрузки настроек:', e);
         }
+    }
+
+    // ─── Кеш с ограничением ──────────────────────────────────────────────
+    function setCache(key, value) {
+        if (coverCache.size >= MAX_CACHE_SIZE) {
+            const firstKey = coverCache.keys().next().value;
+            coverCache.delete(firstKey);
+        }
+        coverCache.set(key, value);
     }
 
     // ─── Цветовые утилиты ──────────────────────────────────────────────────
@@ -132,21 +140,21 @@
         return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
     }
 
-    // ─── Извлечение доминирующего цвета ──────────────────────────────────
+    // ─── Извлечение доминирующего цвета (оптимизированное) ──────────────
     function extractDominantColorFromImage(img) {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         if (!ctx) return null;
-        const w = img.naturalWidth || 400;
-        const h = img.naturalHeight || 400;
-        canvas.width = w;
-        canvas.height = h;
-        ctx.drawImage(img, 0, 0, w, h);
-        const data = ctx.getImageData(0, 0, w, h).data;
+        // Уменьшаем размер до 100x100 для производительности
+        const size = 100;
+        canvas.width = size;
+        canvas.height = size;
+        ctx.drawImage(img, 0, 0, size, size);
+        const data = ctx.getImageData(0, 0, size, size).data;
 
         const pref = settings.saturationPreference || 0.7;
         const pixels = [];
-        const step = 4;
+        const step = 2; // можно уменьшить шаг, т.к. пикселей уже мало
         const satThreshold = 0.05;
         for (let i = 0; i < data.length; i += step * 4) {
             const r = data[i];
@@ -168,6 +176,7 @@
             return { r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) };
         }
 
+        // Сортируем по насыщенности (только нужное количество)
         pixels.sort((a, b) => b.sat - a.sat);
         const topPercent = 0.05 + pref * 0.75;
         const topCount = Math.max(1, Math.floor(pixels.length * topPercent));
@@ -253,7 +262,6 @@
             intensity = intensity * 0.5;
         }
 
-        // Адаптивная яркость и насыщенность
         if (settings.adaptiveBrightness) {
             const deltaLightness = (targetLightness - 0.5) * 0.8;
             if (targetLightness > 0.5) {
@@ -265,7 +273,6 @@
             }
         }
 
-        // Спецобработка нейтральных обложек
         if (isWhite) {
             if (settings.specialNeutralHandling) {
                 finalBright = Math.min(2.0, finalBright * 2.0);
@@ -340,7 +347,6 @@
         if (!canvas) return;
         const filter = `hue-rotate(${values.hue}deg) saturate(${values.saturate}) brightness(${values.brightness})`;
         canvas.style.filter = filter;
-        canvas.style.overflow = 'hidden';
         lastAppliedFilterString = filter;
     }
 
@@ -348,7 +354,6 @@
         const canvas = getCanvas();
         if (canvas) {
             canvas.style.filter = 'none';
-            canvas.style.overflow = 'hidden';
             lastAppliedFilterString = 'none';
             log('Фильтр сброшен');
         }
@@ -363,7 +368,6 @@
         const canvas = getCanvas();
         if (!canvas) return;
 
-        // Если нужно сбросить фильтр
         if (shouldFilterBeCleared()) {
             clearFilter();
             animState.current = { hue: 0, saturate: 1, brightness: 1 };
@@ -407,7 +411,6 @@
         animState.active = true;
 
         function step(time) {
-            // Проверяем, не нужно ли сбросить фильтр (пауза)
             if (shouldFilterBeCleared()) {
                 clearFilter();
                 animState.current = { hue: 0, saturate: 1, brightness: 1 };
@@ -508,16 +511,23 @@
                 callback(coverCache.get(url));
                 return;
             }
+            // Лимит одновременных предзагрузок
+            if (activePreloads >= MAX_PRELOADS) {
+                callback(null);
+                return;
+            }
+            activePreloads++;
             const img = new Image();
             img.crossOrigin = 'anonymous';
             img.referrerPolicy = 'no-referrer';
             const id = ++preloadId;
             img.onload = () => {
+                activePreloads--;
                 if (id !== preloadId) return;
                 try {
                     const color = extractDominantColorFromImage(img);
                     if (color) {
-                        coverCache.set(url, color);
+                        setCache(url, color);
                         callback(color);
                     } else {
                         callback(null);
@@ -527,11 +537,13 @@
                 }
             };
             img.onerror = () => {
+                activePreloads--;
                 if (id !== preloadId) return;
                 callback(null);
             };
             img.src = url;
         } catch (e) {
+            activePreloads--;
             callback(null);
         }
     }
@@ -616,12 +628,12 @@
                             }
                             animState.active = false;
                         } else {
-                            // Если настройка отключена, сохраняем фильтр
-                            const track = window.pulsesyncApi?.getCurrentTrack();
-                            if (track && currentTargetColor) {
+                            // Сохраняем текущий фильтр
+                            if (currentTargetColor) {
                                 applyColorToCanvas(currentTargetColor);
-                            } else if (track) {
-                                processTrack(track, true);
+                            } else {
+                                const track = window.pulsesyncApi?.getCurrentTrack();
+                                if (track) processTrack(track, true);
                             }
                         }
                     } else {
@@ -647,31 +659,45 @@
         log('Инициализация...');
         loadSettings();
 
-        const canvas = getCanvas();
-        if (canvas) {
-            isReady = true;
-            onTrackChanged();
-            startTracking();
-        } else {
-            warn('Canvas не найден, ждём...');
-            const observer = new MutationObserver(() => {
-                const c = getCanvas();
-                if (c) {
-                    observer.disconnect();
+        // Устанавливаем will-change для будущего canvas (если есть)
+        const existingCanvas = getCanvas();
+        if (existingCanvas) {
+            existingCanvas.style.willChange = 'filter';
+            existingCanvas.style.overflow = 'hidden';
+        }
+
+        const findAndInit = () => {
+            const canvas = getCanvas();
+            if (canvas) {
+                canvas.style.willChange = 'filter';
+                canvas.style.overflow = 'hidden';
+                if (!isReady) {
                     isReady = true;
                     reapplyFilter();
                     startTracking();
                 }
+                return true;
+            }
+            return false;
+        };
+
+        if (findAndInit()) {
+            log('Canvas найден сразу');
+        } else {
+            warn('Canvas не найден, ждём...');
+            // Единый наблюдатель за изменениями в DOM
+            const observer = new MutationObserver(() => {
+                if (findAndInit()) {
+                    observer.disconnect();
+                }
             });
             observer.observe(document.body, { childList: true, subtree: true });
 
+            // Таймаут на случай, если canvas так и не появится
             setTimeout(() => {
                 if (!isReady) {
-                    const c = getCanvas();
-                    if (c) {
-                        isReady = true;
-                        reapplyFilter();
-                        startTracking();
+                    if (findAndInit()) {
+                        // уже обработано
                     } else {
                         warn('Canvas не найден после таймаута. Возможно, вы не на странице "Моя волна".');
                     }
@@ -679,23 +705,25 @@
             }, 5000);
         }
 
-        // ─── Наблюдатель за появлением canvas внутри VibePage_root ──────
+        // ─── Наблюдатель за перестроением canvas внутри VibePage_root ──────
+        // Используем уже существующий observer или создаём новый для отслеживания вложенных изменений
         let canvasObserver = null;
         const root = document.querySelector('[class*="VibePage_root"]');
         if (root) {
             canvasObserver = new MutationObserver(() => {
-                if (findCanvas()) {
+                if (getCanvas()) {
                     reapplyFilter();
                 }
             });
             canvasObserver.observe(root, { childList: true, subtree: true });
         } else {
+            // Если корня нет, ждём его появления
             const rootObserver = new MutationObserver(() => {
                 const r = document.querySelector('[class*="VibePage_root"]');
                 if (r) {
                     rootObserver.disconnect();
                     canvasObserver = new MutationObserver(() => {
-                        if (findCanvas()) {
+                        if (getCanvas()) {
                             reapplyFilter();
                         }
                     });
