@@ -10,6 +10,20 @@
         console.warn(`[${ADDON_NAME}]`, ...args);
     }
 
+    let DEBUG = false;
+
+    function debugLog(...args) {
+        if (DEBUG) console.log(`%c[${ADDON_NAME} DEBUG]`, 'color: #00bfff; font-weight: bold;', ...args);
+    }
+
+    function debugGroup(label, fn) {
+        if (DEBUG) {
+            console.group(`%c[${ADDON_NAME} DEBUG] ${label}`, 'color: #00bfff;');
+            fn();
+            console.groupEnd();
+        }
+    }
+
     // ─── Настройки ──────────────────────────────────────────────────────────
     const DEFAULTS = {
         enabled: true,
@@ -20,7 +34,9 @@
         preload: true,
         specialNeutralHandling: true,
         saturationPreference: 0.7,
-        useFilterOnPause: true
+        useFilterOnPause: true,
+        debug: false,
+        useAlternativeMethod: false
     };
 
     let settings = { ...DEFAULTS };
@@ -28,6 +44,7 @@
     let isPaused = false;
     let lastTrackId = null;
     let currentTargetColor = null;
+    let lastWaveColor = null;
 
     const coverCache = new Map();
     const MAX_CACHE_SIZE = 150;
@@ -37,7 +54,7 @@
 
     // ─── Анимационные переменные ──────────────────────────────────────────
     const animDuration = 400;
-    let animState = {
+    const animState = {
         current: { hue: 0, saturate: 1, brightness: 1 },
         target: { hue: 0, saturate: 1, brightness: 1 },
         start: { hue: 0, saturate: 1, brightness: 1 },
@@ -46,6 +63,10 @@
         frameId: null
     };
     let lastAppliedFilterString = '';
+    let isFilterCleared = true;
+
+    let reapplyTimer = null;
+    let playStateDebounceTimer = null;
 
     // ─── Утилиты для настроек ──────────────────────────────────────────────
     function unwrap(val, fallback) {
@@ -55,16 +76,34 @@
     }
 
     function applySettings(newS) {
-        settings.enabled = unwrap(newS.enabled, DEFAULTS.enabled);
-        settings.intensity = unwrap(newS.intensity, DEFAULTS.intensity);
-        settings.saturation = unwrap(newS.saturation, DEFAULTS.saturation);
-        settings.brightness = unwrap(newS.brightness, DEFAULTS.brightness);
-        settings.adaptiveBrightness = unwrap(newS.adaptiveBrightness, DEFAULTS.adaptiveBrightness);
-        settings.preload = unwrap(newS.preload, DEFAULTS.preload);
-        settings.specialNeutralHandling = unwrap(newS.specialNeutralHandling, DEFAULTS.specialNeutralHandling);
-        settings.saturationPreference = unwrap(newS.saturationPreference, DEFAULTS.saturationPreference);
-        settings.useFilterOnPause = unwrap(newS.useFilterOnPause, DEFAULTS.useFilterOnPause);
-    }
+		// Сохраняем старые значения параметров, влияющих на извлечение цвета
+		const oldUseAlternative = settings.useAlternativeMethod;
+		const oldSaturationPref = settings.saturationPreference;
+
+		settings.enabled = unwrap(newS.enabled, DEFAULTS.enabled);
+		settings.intensity = unwrap(newS.intensity, DEFAULTS.intensity);
+		settings.saturation = unwrap(newS.saturation, DEFAULTS.saturation);
+		settings.brightness = unwrap(newS.brightness, DEFAULTS.brightness);
+		settings.adaptiveBrightness = unwrap(newS.adaptiveBrightness, DEFAULTS.adaptiveBrightness);
+		settings.preload = unwrap(newS.preload, DEFAULTS.preload);
+		settings.specialNeutralHandling = unwrap(newS.specialNeutralHandling, DEFAULTS.specialNeutralHandling);
+		settings.saturationPreference = unwrap(newS.saturationPreference, DEFAULTS.saturationPreference);
+		settings.useFilterOnPause = unwrap(newS.useFilterOnPause, DEFAULTS.useFilterOnPause);
+		settings.useAlternativeMethod = unwrap(newS.useAlternativeMethod, DEFAULTS.useAlternativeMethod);
+		const newDebug = unwrap(newS.debug, DEFAULTS.debug);
+		if (newDebug !== DEBUG) {
+			DEBUG = newDebug;
+			debugLog('Режим отладки', DEBUG ? 'ВКЛЮЧЁН' : 'ВЫКЛЮЧЁН');
+		}
+
+		// Если изменились параметры извлечения цвета – сбрасываем кеш и принудительно обновляем текущий трек
+		if (oldUseAlternative !== settings.useAlternativeMethod || oldSaturationPref !== settings.saturationPreference) {
+			coverCache.clear();
+			debugLog('Кеш обложек очищен из-за изменения параметров извлечения цвета');
+			// Сбрасываем lastTrackId, чтобы processTrack не проигнорировал тот же трек
+			lastTrackId = null;
+		}
+	}
 
     function loadSettings() {
         try {
@@ -73,14 +112,12 @@
                 const s = store.getCurrent() || {};
                 applySettings(s);
                 store.onChange((newS) => {
-                    try {
-                        applySettings(newS);
-                        if (isReady) {
-                            const track = window.pulsesyncApi?.getCurrentTrack();
-                            if (track) processTrack(track, true);
-                            else reapplyFilter();
-                        }
-                    } catch (e) {}
+                    applySettings(newS);
+                    if (isReady) {
+                        const track = window.pulsesyncApi?.getCurrentTrack();
+                        if (track) processTrack(track, true);
+                        else reapplyFilter();
+                    }
                 });
             }
         } catch (e) {
@@ -88,7 +125,7 @@
         }
     }
 
-    // ─── Кеш с ограничением ──────────────────────────────────────────────
+    // ─── Кеш ────────────────────────────────────────────────────────────────
     function setCache(key, value) {
         if (coverCache.size >= MAX_CACHE_SIZE) {
             const firstKey = coverCache.keys().next().value;
@@ -140,22 +177,28 @@
         return { r: Math.round((r + m) * 255), g: Math.round((g + m) * 255), b: Math.round((b + m) * 255) };
     }
 
-    // ─── Извлечение доминирующего цвета (оптимизированное) ──────────────
-    function extractDominantColorFromImage(img) {
+    // ─── Вспомогательная функция для получения данных изображения ────────
+    function getImageData(img) {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
         if (!ctx) return null;
-        // Уменьшаем размер до 100x100 для производительности
         const size = 100;
         canvas.width = size;
         canvas.height = size;
         ctx.drawImage(img, 0, 0, size, size);
-        const data = ctx.getImageData(0, 0, size, size).data;
+        return ctx.getImageData(0, 0, size, size).data;
+    }
+
+    // ─── Стандартный метод извлечения цвета (сортировка по насыщенности) ──
+    function extractDominantColorDefault(img) {
+        const data = getImageData(img);
+        if (!data) return null;
 
         const pref = settings.saturationPreference || 0.7;
         const pixels = [];
-        const step = 2; // можно уменьшить шаг, т.к. пикселей уже мало
+        const step = 2;
         const satThreshold = 0.05;
+
         for (let i = 0; i < data.length; i += step * 4) {
             const r = data[i];
             const g = data[i + 1];
@@ -176,7 +219,6 @@
             return { r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) };
         }
 
-        // Сортируем по насыщенности (только нужное количество)
         pixels.sort((a, b) => b.sat - a.sat);
         const topPercent = 0.05 + pref * 0.75;
         const topCount = Math.max(1, Math.floor(pixels.length * topPercent));
@@ -188,11 +230,89 @@
             gSum += p.g;
             bSum += p.b;
         }
-        return {
+        let color = {
             r: Math.round(rSum / topPixels.length),
             g: Math.round(gSum / topPixels.length),
             b: Math.round(bSum / topPixels.length)
         };
+
+        const hsl = rgbToHsl(color.r, color.g, color.b);
+        if (hsl.l < 0.15 && hsl.s > 0.1) {
+            const newLight = Math.min(hsl.l * 1.8, 0.5);
+            const rgb = hslToRgb(hsl.h, hsl.s, newLight);
+            color = { r: rgb.r, g: rgb.g, b: rgb.b };
+            debugLog('Коррекция яркости: был', { r: color.r, g: color.g, b: color.b }, 'стал', color);
+        }
+
+        return color;
+    }
+
+    // ─── Альтернативный метод извлечения цвета (гистограмма + баланс) ─────
+    function extractDominantColorAlternative(img) {
+        const data = getImageData(img);
+        if (!data) return null;
+
+        const balance = settings.saturationPreference || 0.7;
+        const levels = 16;
+        const quant = 256 / levels;
+        const histogram = new Map();
+        let totalPixels = 0;
+
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const { l } = rgbToHsl(r, g, b);
+            if (l < 0.03 || l > 0.97) continue;
+            const key = `${Math.floor(r/quant)},${Math.floor(g/quant)},${Math.floor(b/quant)}`;
+            histogram.set(key, (histogram.get(key) || 0) + 1);
+            totalPixels++;
+        }
+
+        if (totalPixels === 0) {
+            let r = 0, g = 0, b = 0, count = 0;
+            for (let i = 0; i < data.length; i += 16 * 4) {
+                r += data[i];
+                g += data[i + 1];
+                b += data[i + 2];
+                count++;
+            }
+            return { r: Math.round(r / count), g: Math.round(g / count), b: Math.round(b / count) };
+        }
+
+        let bestKey = null;
+        let bestScore = -Infinity;
+
+        for (const [key, count] of histogram) {
+            const freq = count / totalPixels;
+            const [rq, gq, bq] = key.split(',').map(Number);
+            const r = Math.round((rq + 0.5) * quant);
+            const g = Math.round((gq + 0.5) * quant);
+            const b = Math.round((bq + 0.5) * quant);
+            const hsl = rgbToHsl(r, g, b);
+            const sat = hsl.s;
+            const score = freq * (1 - balance) + sat * balance;
+            if (score > bestScore) {
+                bestScore = score;
+                bestKey = key;
+            }
+        }
+
+        if (!bestKey) return null;
+        const [rq, gq, bq] = bestKey.split(',').map(Number);
+        return {
+            r: Math.round((rq + 0.5) * quant),
+            g: Math.round((gq + 0.5) * quant),
+            b: Math.round((bq + 0.5) * quant)
+        };
+    }
+
+    // ─── Основная функция извлечения (выбор метода) ──────────────────────
+    function extractDominantColorFromImage(img) {
+        debugLog(settings.useAlternativeMethod ? 'Используем альтернативный метод' : 'Используем стандартный метод');
+        return settings.useAlternativeMethod
+            ? extractDominantColorAlternative(img)
+            : extractDominantColorDefault(img);
     }
 
     // ─── Получение корневого элемента и цвета волны из CSS ──────────────
@@ -209,8 +329,11 @@
                 return null;
             }
             const colorStr = getComputedStyle(root).getPropertyValue('--vibe-gradient-stop-0').trim();
+            debugLog('CSS-переменная --vibe-gradient-stop-0 =', colorStr);
             if (!colorStr) {
-                return { r: 0, g: 191, b: 255 };
+                const fallback = { r: 0, g: 191, b: 255 };
+                debugLog('⚠️ FALLBACK: цветовая переменная пуста, используем', fallback);
+                return fallback;
             }
             let rgb = null;
             const rgbMatch = colorStr.match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
@@ -220,21 +343,32 @@
                 rgb = hexToRgb(colorStr);
             }
             if (!rgb) {
-                return { r: 0, g: 191, b: 255 };
+                const fallback = { r: 0, g: 191, b: 255 };
+                debugLog('⚠️ FALLBACK: не удалось распарсить цвет, используем', fallback);
+                return fallback;
             }
+            debugLog('Исходный цвет волны (RGB):', rgb);
             return rgb;
         } catch (e) {
-            return { r: 0, g: 191, b: 255 };
+            const fallback = { r: 0, g: 191, b: 255 };
+            debugLog('⚠️ FALLBACK: исключение при получении цвета волны, используем', fallback);
+            return fallback;
         }
     }
 
     // ─── Адаптивный расчёт фильтра ──────────────────────────────────────────
     function computeFilterValues(targetColor) {
         const defaultValues = { hue: 0, saturate: 1, brightness: 1 };
-        if (!targetColor) return defaultValues;
+        if (!targetColor) {
+            debugLog('computeFilterValues: targetColor = null, возвращаем default');
+            return defaultValues;
+        }
 
         const source = getCurrentWaveColorFromCSS();
-        if (!source) return defaultValues;
+        if (!source) {
+            debugLog('⚠️ FALLBACK: source color = null, возвращаем default');
+            return defaultValues;
+        }
 
         const sourceHsl = rgbToHsl(source.r, source.g, source.b);
         const targetHsl = rgbToHsl(targetColor.r, targetColor.g, targetColor.b);
@@ -250,6 +384,13 @@
         const isBlack = targetLightness < 0.1;
         const isNeutral = targetSaturation < 0.1 && !isWhite && !isBlack;
 
+        debugGroup('Расчёт фильтра', () => {
+            console.log('Исходный цвет (source):', source, 'HSL:', sourceHsl);
+            console.log('Целевой цвет (target):', targetColor, 'HSL:', targetHsl);
+            console.log('ΔH (град):', deltaH);
+            console.log('Категория:', isWhite ? 'БЕЛЫЙ' : isBlack ? 'ЧЁРНЫЙ' : isNeutral ? 'НЕЙТРАЛЬНЫЙ' : 'ОБЫЧНЫЙ');
+        });
+
         let finalHue = 0;
         let finalBright = settings.brightness;
         let finalSaturate = settings.saturation;
@@ -257,9 +398,9 @@
         const absDelta = Math.abs(deltaH);
         let intensity = settings.intensity;
         if (absDelta < 15) {
-            intensity = intensity * (absDelta / 15);
+            intensity *= (absDelta / 15);
         } else if (absDelta < 30) {
-            intensity = intensity * 0.5;
+            intensity *= 0.5;
         }
 
         if (settings.adaptiveBrightness) {
@@ -278,7 +419,9 @@
                 finalBright = Math.min(2.0, finalBright * 2.0);
                 finalSaturate = Math.min(0.2, settings.saturation * 0.2);
                 finalHue = 0;
+                debugLog('Белый цвет: обработано специально, яркость=', finalBright, 'насыщенность=', finalSaturate);
             } else {
+                debugLog('⚠️ FALLBACK: белый цвет, specialNeutralHandling выключен → возвращаем default');
                 return defaultValues;
             }
         } else if (isBlack) {
@@ -286,7 +429,9 @@
                 finalBright = Math.max(0.4, finalBright * 0.5);
                 finalSaturate = 0.1;
                 finalHue = 0;
+                debugLog('Чёрный цвет: обработано специально, яркость=', finalBright, 'насыщенность=', finalSaturate);
             } else {
+                debugLog('⚠️ FALLBACK: чёрный цвет, specialNeutralHandling выключен → возвращаем default');
                 return defaultValues;
             }
         } else if (isNeutral) {
@@ -298,44 +443,41 @@
                 } else {
                     finalHue = 0;
                 }
+                debugLog('Нейтральный цвет: обработано специально, яркость=', finalBright, 'насыщенность=', finalSaturate, 'оттенок=', finalHue);
             } else {
+                debugLog('⚠️ FALLBACK: нейтральный цвет, specialNeutralHandling выключен → возвращаем default');
                 return defaultValues;
             }
         } else {
             finalHue = deltaH * intensity;
+            debugLog('Обычный цвет: оттенок=', finalHue, 'интенсивность=', intensity);
         }
 
         finalHue = Math.min(360, Math.max(-360, finalHue));
         finalBright = Math.min(2.0, Math.max(0.5, finalBright));
         finalSaturate = Math.min(1.5, Math.max(0.1, finalSaturate));
 
-        return { hue: finalHue, saturate: finalSaturate, brightness: finalBright };
+        const result = { hue: finalHue, saturate: finalSaturate, brightness: finalBright };
+        debugLog('Итоговые значения фильтра:', result);
+        return result;
     }
 
     // ─── Работа с canvas ──────────────────────────────────────────────────
-    function findCanvas() {
-        const root = document.querySelector('[class*="VibePage_root"]');
-        if (root) {
-            const canvas = root.querySelector('canvas');
-            if (canvas) return canvas;
-        }
-        const anyCanvas = document.querySelector('canvas');
-        if (anyCanvas) return anyCanvas;
-        const animRoot = document.querySelector('[class*="VibeWidgetAnimation_root"]');
-        if (animRoot) {
-            const canvas = animRoot.querySelector('canvas');
-            if (canvas) return canvas;
-        }
-        return null;
-    }
-
     function getCanvas() {
         try {
-            const canvas = findCanvas();
-            if (!canvas) {
-                return null;
+            const root = document.querySelector('[class*="VibePage_root"]');
+            if (root) {
+                const canvas = root.querySelector('canvas');
+                if (canvas) return canvas;
             }
-            return canvas;
+            const anyCanvas = document.querySelector('canvas');
+            if (anyCanvas) return anyCanvas;
+            const animRoot = document.querySelector('[class*="VibeWidgetAnimation_root"]');
+            if (animRoot) {
+                const canvas = animRoot.querySelector('canvas');
+                if (canvas) return canvas;
+            }
+            return null;
         } catch (e) {
             return null;
         }
@@ -344,18 +486,23 @@
     // ─── Применение фильтра ──────────────────────────────────────────────
     function applyFilterValues(values) {
         const canvas = getCanvas();
-        if (!canvas) return;
+        if (!canvas) {
+            debugLog('applyFilterValues: canvas не найден');
+            return;
+        }
         const filter = `hue-rotate(${values.hue}deg) saturate(${values.saturate}) brightness(${values.brightness})`;
         canvas.style.filter = filter;
         lastAppliedFilterString = filter;
+        isFilterCleared = false;
     }
 
     function clearFilter() {
         const canvas = getCanvas();
-        if (canvas) {
+        if (canvas && canvas.style.filter !== 'none') {
             canvas.style.filter = 'none';
             lastAppliedFilterString = 'none';
-            log('Фильтр сброшен');
+            isFilterCleared = true;
+            debugLog('Фильтр сброшен (clearFilter)');
         }
     }
 
@@ -363,12 +510,12 @@
         return isPaused && settings.useFilterOnPause;
     }
 
-    // ─── Плавная анимация фильтра ──────────────────────────────────────────
+    // ─── Плавная анимация фильтра ──────────────────────────────────────
     function startAnimation(targetValues) {
         const canvas = getCanvas();
         if (!canvas) return;
 
-        if (shouldFilterBeCleared()) {
+        if (shouldFilterBeCleared() || !settings.enabled || !targetValues) {
             clearFilter();
             animState.current = { hue: 0, saturate: 1, brightness: 1 };
             if (animState.frameId) {
@@ -379,14 +526,9 @@
             return;
         }
 
-        if (!settings.enabled || !targetValues) {
-            clearFilter();
-            animState.current = { hue: 0, saturate: 1, brightness: 1 };
-            if (animState.frameId) {
-                cancelAnimationFrame(animState.frameId);
-                animState.frameId = null;
-            }
-            animState.active = false;
+        if (animState.active) {
+            animState.target = { ...targetValues };
+            debugLog('Анимация активна, обновлены целевые значения:', targetValues);
             return;
         }
 
@@ -394,8 +536,9 @@
         if (targetValues.hue === current.hue &&
             targetValues.saturate === current.saturate &&
             targetValues.brightness === current.brightness) {
-            if (lastAppliedFilterString === 'none') {
+            if (lastAppliedFilterString === 'none' || isFilterCleared) {
                 applyFilterValues(targetValues);
+                debugLog('Применён фильтр (повторно):', targetValues);
             }
             return;
         }
@@ -410,8 +553,10 @@
         animState.startTime = performance.now();
         animState.active = true;
 
+        debugLog('Начало анимации: от', animState.start, 'к', animState.target);
+
         function step(time) {
-            if (shouldFilterBeCleared()) {
+            if (shouldFilterBeCleared() || !settings.enabled) {
                 clearFilter();
                 animState.current = { hue: 0, saturate: 1, brightness: 1 };
                 if (animState.frameId) {
@@ -438,18 +583,22 @@
                 animState.current = { ...animState.target };
                 animState.active = false;
                 animState.frameId = null;
-                return;
+                debugLog('Анимация завершена, финальный фильтр:', animState.target);
+            } else {
+                animState.frameId = requestAnimationFrame(step);
             }
-
-            animState.frameId = requestAnimationFrame(step);
         }
 
         animState.frameId = requestAnimationFrame(step);
     }
 
+    // ─── Применение цвета с ожиданием обновления цвета волны ──────────────
     function applyColorToCanvas(targetColor) {
         const canvas = getCanvas();
-        if (!canvas) return;
+        if (!canvas) {
+            debugLog('applyColorToCanvas: canvas не найден');
+            return;
+        }
 
         if (shouldFilterBeCleared()) {
             clearFilter();
@@ -473,23 +622,40 @@
             return;
         }
 
+        const currentWave = getCurrentWaveColorFromCSS();
+        if (currentWave && currentWave.r === 0 && currentWave.g === 0 && currentWave.b === 0) {
+            debugLog('applyColorToCanvas: цвет волны чёрный, откладываем применение');
+            requestAnimationFrame(() => applyColorToCanvas(targetColor));
+            return;
+        }
+
         const targetValues = computeFilterValues(targetColor);
+        debugLog('applyColorToCanvas: целевой цвет (RGB):', targetColor, '→ фильтр:', targetValues);
         startAnimation(targetValues);
     }
 
+    // ─── Переприменение с дебаунсом ──────────────────────────────────────
     function reapplyFilter() {
         if (!isReady) return;
-        try {
-            const track = window.pulsesyncApi?.getCurrentTrack();
-            if (track && currentTargetColor) {
-                applyColorToCanvas(currentTargetColor);
-                log('Фильтр переприменён (reapplyFilter)');
-            } else if (track) {
-                processTrack(track, true);
-            } else {
-                applyColorToCanvas(null);
-            }
-        } catch (e) {}
+        if (isFilterCleared && shouldFilterBeCleared()) return;
+        if (reapplyTimer) {
+            clearTimeout(reapplyTimer);
+            reapplyTimer = null;
+        }
+        reapplyTimer = setTimeout(() => {
+            reapplyTimer = null;
+            try {
+                const track = window.pulsesyncApi?.getCurrentTrack();
+                if (track && currentTargetColor) {
+                    applyColorToCanvas(currentTargetColor);
+                    log('Фильтр переприменён (reapplyFilter)');
+                } else if (track) {
+                    processTrack(track, true);
+                } else {
+                    applyColorToCanvas(null);
+                }
+            } catch (e) {}
+        }, 50);
     }
 
     // ─── Кеширование обложек ──────────────────────────────────────────────
@@ -511,8 +677,8 @@
                 callback(coverCache.get(url));
                 return;
             }
-            // Лимит одновременных предзагрузок
             if (activePreloads >= MAX_PRELOADS) {
+                debugLog(`loadCoverColor: превышен лимит параллельных загрузок (${MAX_PRELOADS}), пропускаем`);
                 callback(null);
                 return;
             }
@@ -521,13 +687,22 @@
             img.crossOrigin = 'anonymous';
             img.referrerPolicy = 'no-referrer';
             const id = ++preloadId;
+            const trackId = track.id;
+
             img.onload = () => {
                 activePreloads--;
                 if (id !== preloadId) return;
+                const currentTrack = window.pulsesyncApi?.getCurrentTrack();
+                if (!currentTrack || String(currentTrack.id) !== String(trackId)) {
+                    debugLog(`loadCoverColor: трек сменился (был ${trackId}, сейчас ${currentTrack?.id}), игнорируем`);
+                    callback(null);
+                    return;
+                }
                 try {
                     const color = extractDominantColorFromImage(img);
                     if (color) {
                         setCache(url, color);
+                        debugLog(`loadCoverColor: цвет для трека ${trackId} успешно извлечён`, color);
                         callback(color);
                     } else {
                         callback(null);
@@ -539,6 +714,7 @@
             img.onerror = () => {
                 activePreloads--;
                 if (id !== preloadId) return;
+                debugLog(`loadCoverColor: ошибка загрузки обложки для трека ${trackId}`);
                 callback(null);
             };
             img.src = url;
@@ -560,17 +736,16 @@
         if (id === lastTrackId && !immediate) return;
         lastTrackId = id;
         log('Обработка трека:', track.title);
+        debugLog(`processTrack: трек ${id} "${track.title}", immediate=${immediate}`);
 
-        if (applyTimeout) clearTimeout(applyTimeout);
+        if (applyTimeout) {
+            clearTimeout(applyTimeout);
+            applyTimeout = null;
+        }
 
         const apply = (color) => {
-            if (color) {
-                currentTargetColor = color;
-                applyColorToCanvas(color);
-            } else {
-                currentTargetColor = null;
-                applyColorToCanvas(null);
-            }
+            currentTargetColor = color;
+            applyColorToCanvas(color);
         };
 
         if (immediate) {
@@ -579,9 +754,10 @@
         }
 
         applyTimeout = setTimeout(() => {
+            debugLog(`processTrack: таймаут 100 мс истёк, загружаем цвет для трека ${id}`);
             loadCoverColor(track, apply);
             applyTimeout = null;
-        }, 50);
+        }, 100);
     }
 
     function preloadNextTrack() {
@@ -593,6 +769,7 @@
             if (!nextTrack) return;
             const url = getCoverUrl(nextTrack);
             if (url && !coverCache.has(url)) {
+                debugLog(`preloadNextTrack: предзагрузка обложки для следующего трека ${nextTrack.id}`);
                 loadCoverColor(nextTrack, () => {});
             }
         } catch (e) {}
@@ -601,6 +778,7 @@
     function onTrackChanged() {
         try {
             const track = window.pulsesyncApi?.getCurrentTrack();
+            debugLog('onTrackChanged вызван, текущий трек:', track);
             if (!track) {
                 applyColorToCanvas(null);
                 return;
@@ -610,48 +788,95 @@
         } catch (e) {}
     }
 
+    // ─── Проверка состояния паузы с debounce ─────────────────────────────
     function checkPlayState() {
         try {
             if (!window.pulsesyncApi) return;
             const playing = window.pulsesyncApi.isPlaying();
             const paused = !playing;
-            if (paused !== isPaused) {
-                isPaused = paused;
-                if (isReady) {
-                    if (paused) {
-                        if (settings.useFilterOnPause) {
-                            clearFilter();
-                            animState.current = { hue: 0, saturate: 1, brightness: 1 };
-                            if (animState.frameId) {
-                                cancelAnimationFrame(animState.frameId);
-                                animState.frameId = null;
-                            }
-                            animState.active = false;
-                        } else {
-                            // Сохраняем текущий фильтр
-                            if (currentTargetColor) {
-                                applyColorToCanvas(currentTargetColor);
-                            } else {
-                                const track = window.pulsesyncApi?.getCurrentTrack();
-                                if (track) processTrack(track, true);
-                            }
+            if (paused === isPaused) return;
+
+            isPaused = paused;
+            debugLog(`checkPlayState: состояние паузы мгновенно обновлено на ${isPaused}`);
+
+            if (playStateDebounceTimer) {
+                clearTimeout(playStateDebounceTimer);
+                playStateDebounceTimer = null;
+            }
+
+            playStateDebounceTimer = setTimeout(() => {
+                playStateDebounceTimer = null;
+                if (!isReady) return;
+                if (isPaused) {
+                    if (settings.useFilterOnPause) {
+                        clearFilter();
+                        animState.current = { hue: 0, saturate: 1, brightness: 1 };
+                        if (animState.frameId) {
+                            cancelAnimationFrame(animState.frameId);
+                            animState.frameId = null;
                         }
+                        animState.active = false;
+                        debugLog('checkPlayState (debounced): пауза, фильтр сброшен');
                     } else {
-                        // Возобновление
-                        const track = window.pulsesyncApi?.getCurrentTrack();
-                        if (track) {
-                            if (currentTargetColor) {
-                                applyColorToCanvas(currentTargetColor);
-                            } else {
-                                processTrack(track, true);
-                            }
+                        if (currentTargetColor) {
+                            applyColorToCanvas(currentTargetColor);
+                            debugLog('checkPlayState (debounced): пауза, но фильтр сохранён');
                         } else {
-                            applyColorToCanvas(null);
+                            const track = window.pulsesyncApi?.getCurrentTrack();
+                            if (track) processTrack(track, true);
+                        }
+                    }
+                } else {
+                    const track = window.pulsesyncApi?.getCurrentTrack();
+                    debugLog('checkPlayState (debounced): воспроизведение возобновлено');
+                    if (track) {
+                        if (currentTargetColor) applyColorToCanvas(currentTargetColor);
+                        else processTrack(track, true);
+                    } else {
+                        applyColorToCanvas(null);
+                    }
+                }
+            }, 200);
+        } catch (e) {}
+    }
+
+    // ─── Наблюдение за изменением цвета волны ────────────────────────────
+    let waveColorObserver = null;
+
+    function watchWaveColorChanges() {
+        const root = getRootElement();
+        if (!root) {
+            debugLog('watchWaveColorChanges: корневой элемент не найден, повтор через 500 мс');
+            setTimeout(watchWaveColorChanges, 500);
+            return;
+        }
+
+        lastWaveColor = getCurrentWaveColorFromCSS();
+
+        if (waveColorObserver) waveColorObserver.disconnect();
+        waveColorObserver = new MutationObserver(() => {
+            requestAnimationFrame(() => {
+                const newColor = getCurrentWaveColorFromCSS();
+                if (newColor) {
+                    const changed = !lastWaveColor ||
+                        lastWaveColor.r !== newColor.r ||
+                        lastWaveColor.g !== newColor.g ||
+                        lastWaveColor.b !== newColor.b;
+                    if (changed) {
+                        debugLog('Цвет волны изменился:', lastWaveColor, '→', newColor);
+                        lastWaveColor = newColor;
+                        if (currentTargetColor) {
+                            applyColorToCanvas(currentTargetColor);
                         }
                     }
                 }
-            }
-        } catch (e) {}
+            });
+        });
+        waveColorObserver.observe(root, {
+            attributes: true,
+            attributeFilter: ['style', 'class']
+        });
+        debugLog('Наблюдение за цветом волны запущено');
     }
 
     // ─── Инициализация ──────────────────────────────────────────────────────
@@ -659,7 +884,6 @@
         log('Инициализация...');
         loadSettings();
 
-        // Устанавливаем will-change для будущего canvas (если есть)
         const existingCanvas = getCanvas();
         if (existingCanvas) {
             existingCanvas.style.willChange = 'filter';
@@ -673,6 +897,8 @@
                 canvas.style.overflow = 'hidden';
                 if (!isReady) {
                     isReady = true;
+                    debugLog('Canvas найден, инициализация завершена');
+                    watchWaveColorChanges();
                     reapplyFilter();
                     startTracking();
                 }
@@ -685,47 +911,33 @@
             log('Canvas найден сразу');
         } else {
             warn('Canvas не найден, ждём...');
-            // Единый наблюдатель за изменениями в DOM
             const observer = new MutationObserver(() => {
-                if (findAndInit()) {
-                    observer.disconnect();
-                }
+                if (findAndInit()) observer.disconnect();
             });
             observer.observe(document.body, { childList: true, subtree: true });
 
-            // Таймаут на случай, если canvas так и не появится
             setTimeout(() => {
-                if (!isReady) {
-                    if (findAndInit()) {
-                        // уже обработано
-                    } else {
-                        warn('Canvas не найден после таймаута. Возможно, вы не на странице "Моя волна".');
-                    }
+                if (!isReady && !findAndInit()) {
+                    warn('Canvas не найден после таймаута. Возможно, вы не на странице "Моя волна".');
                 }
             }, 5000);
         }
 
         // ─── Наблюдатель за перестроением canvas внутри VibePage_root ──────
-        // Используем уже существующий observer или создаём новый для отслеживания вложенных изменений
         let canvasObserver = null;
         const root = document.querySelector('[class*="VibePage_root"]');
         if (root) {
             canvasObserver = new MutationObserver(() => {
-                if (getCanvas()) {
-                    reapplyFilter();
-                }
+                if (getCanvas()) reapplyFilter();
             });
             canvasObserver.observe(root, { childList: true, subtree: true });
         } else {
-            // Если корня нет, ждём его появления
             const rootObserver = new MutationObserver(() => {
                 const r = document.querySelector('[class*="VibePage_root"]');
                 if (r) {
                     rootObserver.disconnect();
                     canvasObserver = new MutationObserver(() => {
-                        if (getCanvas()) {
-                            reapplyFilter();
-                        }
+                        if (getCanvas()) reapplyFilter();
                     });
                     canvasObserver.observe(r, { childList: true, subtree: true });
                 }
@@ -740,11 +952,10 @@
             if (url !== lastUrl) {
                 lastUrl = url;
                 setTimeout(() => {
-                    try {
-                        if (document.querySelector('[class*="VibePage_root"]')) {
-                            reapplyFilter();
-                        }
-                    } catch (e) {}
+                    if (document.querySelector('[class*="VibePage_root"]')) {
+                        debugLog('Смена URL, переприменяем фильтр');
+                        reapplyFilter();
+                    }
                 }, 800);
             }
         });
@@ -763,6 +974,7 @@
                 try {
                     const track = window.pulsesyncApi?.getCurrentTrack();
                     if (track && String(track.id) !== lastTrackId) {
+                        debugLog('setInterval: обнаружен новый трек (id изменился)');
                         onTrackChanged();
                     }
                     checkPlayState();
