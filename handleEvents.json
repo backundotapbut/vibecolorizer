@@ -36,7 +36,7 @@
                 {
                     "id": "brightness",
                     "name": "Базовая яркость волны",
-                    "description": "Базовая яркость (1 = оригинальная, >1 = светлее). К ней добавляется адаптивная коррекция (если включена).",
+                    "description": "Базовая яркость волны. К ней добавляется адаптивная коррекция (если включена).",
                     "type": "slider",
                     "min": 0.5,
                     "max": 1.5,
@@ -55,13 +55,21 @@
                 {
                     "id": "saturationPreference",
                     "name": "Предпочтение насыщенности",
-                    "description": "Насколько сильно алгоритм должен отдавать предпочтение насыщенным цветам обложки (0 = усреднение всех цветов, 1 = только самые насыщенные).",
+                    "description": "Подробности в README.",
                     "type": "slider",
                     "min": 0,
                     "max": 1,
                     "step": 0.05,
                     "value": 0.7,
                     "defaultParameter": 0.7
+                },
+                {
+                    "id": "useAlternativeMethod",
+                    "name": "Использовать альтернативный метод извлечения цвета",
+                    "description": "Включите для использования гистограммного метода извлечения цвета из обложки трека.",
+                    "type": "button",
+                    "bool": false,
+                    "defaultParameter": false
                 },
                 {
                     "id": "specialNeutralHandling",
@@ -86,6 +94,14 @@
                     "type": "button",
                     "bool": true,
                     "defaultParameter": true
+                },
+                {
+                    "id": "debug",
+                    "name": "Режим отладки",
+                    "description": "Включает подробный вывод в консоль для диагностики.",
+                    "type": "button",
+                    "bool": false,
+                    "defaultParameter": false
                 }
             ]
         }
