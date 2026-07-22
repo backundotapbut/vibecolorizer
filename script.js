@@ -11,11 +11,9 @@
     }
 
     let DEBUG = false;
-
     function debugLog(...args) {
         if (DEBUG) console.log(`%c[${ADDON_NAME} DEBUG]`, 'color: #00bfff; font-weight: bold;', ...args);
     }
-
     function debugGroup(label, fn) {
         if (DEBUG) {
             console.group(`%c[${ADDON_NAME} DEBUG] ${label}`, 'color: #00bfff;');
@@ -36,7 +34,8 @@
         saturationPreference: 0.7,
         useFilterOnPause: true,
         debug: false,
-        useAlternativeMethod: false
+        useAlternativeMethod: false,
+        allowExclusion: true
     };
 
     let settings = { ...DEFAULTS };
@@ -51,6 +50,54 @@
     let preloadId = 0;
     let activePreloads = 0;
     const MAX_PRELOADS = 2;
+
+    // ─── Хранилище исключённых треков ───────────────────────────────────────
+    let excludedTracks = new Set();
+
+    function loadExclusions() {
+        try {
+            const data = localStorage.getItem(ADDON_NAME + '_excluded');
+            if (data) {
+                const arr = JSON.parse(data);
+                if (Array.isArray(arr)) {
+                    excludedTracks = new Set(arr.map(String));
+                    debugLog('Загружены исключения:', Array.from(excludedTracks));
+                }
+            }
+        } catch (e) {
+            warn('Ошибка загрузки исключений:', e);
+        }
+    }
+
+    function saveExclusions() {
+        try {
+            const arr = Array.from(excludedTracks);
+            localStorage.setItem(ADDON_NAME + '_excluded', JSON.stringify(arr));
+        } catch (e) {
+            warn('Ошибка сохранения исключений:', e);
+        }
+    }
+
+    function isExcluded(trackId) {
+        return excludedTracks.has(String(trackId));
+    }
+
+    function toggleExclusion(trackId) {
+        const id = String(trackId);
+        if (excludedTracks.has(id)) {
+            excludedTracks.delete(id);
+        } else {
+            excludedTracks.add(id);
+        }
+        saveExclusions();
+        debugLog('Исключения обновлены:', Array.from(excludedTracks));
+        if (isReady) {
+            const track = window.pulsesyncApi?.getCurrentTrack();
+            if (track && String(track.id) === id) {
+                reapplyFilter();
+            }
+        }
+    }
 
     // ─── Анимационные переменные ──────────────────────────────────────────
     const animDuration = 400;
@@ -76,34 +123,33 @@
     }
 
     function applySettings(newS) {
-		// Сохраняем старые значения параметров, влияющих на извлечение цвета
-		const oldUseAlternative = settings.useAlternativeMethod;
-		const oldSaturationPref = settings.saturationPreference;
+        const oldUseAlternative = settings.useAlternativeMethod;
+        const oldSaturationPref = settings.saturationPreference;
 
-		settings.enabled = unwrap(newS.enabled, DEFAULTS.enabled);
-		settings.intensity = unwrap(newS.intensity, DEFAULTS.intensity);
-		settings.saturation = unwrap(newS.saturation, DEFAULTS.saturation);
-		settings.brightness = unwrap(newS.brightness, DEFAULTS.brightness);
-		settings.adaptiveBrightness = unwrap(newS.adaptiveBrightness, DEFAULTS.adaptiveBrightness);
-		settings.preload = unwrap(newS.preload, DEFAULTS.preload);
-		settings.specialNeutralHandling = unwrap(newS.specialNeutralHandling, DEFAULTS.specialNeutralHandling);
-		settings.saturationPreference = unwrap(newS.saturationPreference, DEFAULTS.saturationPreference);
-		settings.useFilterOnPause = unwrap(newS.useFilterOnPause, DEFAULTS.useFilterOnPause);
-		settings.useAlternativeMethod = unwrap(newS.useAlternativeMethod, DEFAULTS.useAlternativeMethod);
-		const newDebug = unwrap(newS.debug, DEFAULTS.debug);
-		if (newDebug !== DEBUG) {
-			DEBUG = newDebug;
-			debugLog('Режим отладки', DEBUG ? 'ВКЛЮЧЁН' : 'ВЫКЛЮЧЁН');
-		}
+        settings.enabled = unwrap(newS.enabled, DEFAULTS.enabled);
+        settings.intensity = unwrap(newS.intensity, DEFAULTS.intensity);
+        settings.saturation = unwrap(newS.saturation, DEFAULTS.saturation);
+        settings.brightness = unwrap(newS.brightness, DEFAULTS.brightness);
+        settings.adaptiveBrightness = unwrap(newS.adaptiveBrightness, DEFAULTS.adaptiveBrightness);
+        settings.preload = unwrap(newS.preload, DEFAULTS.preload);
+        settings.specialNeutralHandling = unwrap(newS.specialNeutralHandling, DEFAULTS.specialNeutralHandling);
+        settings.saturationPreference = unwrap(newS.saturationPreference, DEFAULTS.saturationPreference);
+        settings.useFilterOnPause = unwrap(newS.useFilterOnPause, DEFAULTS.useFilterOnPause);
+        settings.useAlternativeMethod = unwrap(newS.useAlternativeMethod, DEFAULTS.useAlternativeMethod);
+        settings.allowExclusion = unwrap(newS.allowExclusion, DEFAULTS.allowExclusion);
 
-		// Если изменились параметры извлечения цвета – сбрасываем кеш и принудительно обновляем текущий трек
-		if (oldUseAlternative !== settings.useAlternativeMethod || oldSaturationPref !== settings.saturationPreference) {
-			coverCache.clear();
-			debugLog('Кеш обложек очищен из-за изменения параметров извлечения цвета');
-			// Сбрасываем lastTrackId, чтобы processTrack не проигнорировал тот же трек
-			lastTrackId = null;
-		}
-	}
+        const newDebug = unwrap(newS.debug, DEFAULTS.debug);
+        if (newDebug !== DEBUG) {
+            DEBUG = newDebug;
+            debugLog('Режим отладки', DEBUG ? 'ВКЛЮЧЁН' : 'ВЫКЛЮЧЁН');
+        }
+
+        if (oldUseAlternative !== settings.useAlternativeMethod || oldSaturationPref !== settings.saturationPreference) {
+            coverCache.clear();
+            debugLog('Кеш обложек очищен из-за изменения параметров извлечения цвета');
+            lastTrackId = null;
+        }
+    }
 
     function loadSettings() {
         try {
@@ -189,7 +235,7 @@
         return ctx.getImageData(0, 0, size, size).data;
     }
 
-    // ─── Стандартный метод извлечения цвета (сортировка по насыщенности) ──
+    // ─── Стандартный метод извлечения цвета ──────────────────────────────
     function extractDominantColorDefault(img) {
         const data = getImageData(img);
         if (!data) return null;
@@ -247,7 +293,7 @@
         return color;
     }
 
-    // ─── Альтернативный метод извлечения цвета (гистограмма + баланс) ─────
+    // ─── Альтернативный метод извлечения цвета ────────────────────────────
     function extractDominantColorAlternative(img) {
         const data = getImageData(img);
         if (!data) return null;
@@ -307,7 +353,6 @@
         };
     }
 
-    // ─── Основная функция извлечения (выбор метода) ──────────────────────
     function extractDominantColorFromImage(img) {
         debugLog(settings.useAlternativeMethod ? 'Используем альтернативный метод' : 'Используем стандартный метод');
         return settings.useAlternativeMethod
@@ -592,11 +637,23 @@
         animState.frameId = requestAnimationFrame(step);
     }
 
-    // ─── Применение цвета с ожиданием обновления цвета волны ──────────────
-    function applyColorToCanvas(targetColor) {
+    // ─── Применение цвета с учётом исключений ────────────────────────────
+    function applyColorToCanvas(targetColor, trackId) {
         const canvas = getCanvas();
         if (!canvas) {
             debugLog('applyColorToCanvas: canvas не найден');
+            return;
+        }
+
+        if (trackId && isExcluded(trackId)) {
+            debugLog(`Трек ${trackId} исключён, фильтр сброшен`);
+            clearFilter();
+            animState.current = { hue: 0, saturate: 1, brightness: 1 };
+            if (animState.frameId) {
+                cancelAnimationFrame(animState.frameId);
+                animState.frameId = null;
+            }
+            animState.active = false;
             return;
         }
 
@@ -625,7 +682,7 @@
         const currentWave = getCurrentWaveColorFromCSS();
         if (currentWave && currentWave.r === 0 && currentWave.g === 0 && currentWave.b === 0) {
             debugLog('applyColorToCanvas: цвет волны чёрный, откладываем применение');
-            requestAnimationFrame(() => applyColorToCanvas(targetColor));
+            requestAnimationFrame(() => applyColorToCanvas(targetColor, trackId));
             return;
         }
 
@@ -647,7 +704,7 @@
             try {
                 const track = window.pulsesyncApi?.getCurrentTrack();
                 if (track && currentTargetColor) {
-                    applyColorToCanvas(currentTargetColor);
+                    applyColorToCanvas(currentTargetColor, track.id);
                     log('Фильтр переприменён (reapplyFilter)');
                 } else if (track) {
                     processTrack(track, true);
@@ -745,7 +802,7 @@
 
         const apply = (color) => {
             currentTargetColor = color;
-            applyColorToCanvas(color);
+            applyColorToCanvas(color, track.id);
         };
 
         if (immediate) {
@@ -819,7 +876,8 @@
                         debugLog('checkPlayState (debounced): пауза, фильтр сброшен');
                     } else {
                         if (currentTargetColor) {
-                            applyColorToCanvas(currentTargetColor);
+                            const track = window.pulsesyncApi?.getCurrentTrack();
+                            applyColorToCanvas(currentTargetColor, track?.id);
                             debugLog('checkPlayState (debounced): пауза, но фильтр сохранён');
                         } else {
                             const track = window.pulsesyncApi?.getCurrentTrack();
@@ -830,7 +888,7 @@
                     const track = window.pulsesyncApi?.getCurrentTrack();
                     debugLog('checkPlayState (debounced): воспроизведение возобновлено');
                     if (track) {
-                        if (currentTargetColor) applyColorToCanvas(currentTargetColor);
+                        if (currentTargetColor) applyColorToCanvas(currentTargetColor, track.id);
                         else processTrack(track, true);
                     } else {
                         applyColorToCanvas(null);
@@ -866,7 +924,8 @@
                         debugLog('Цвет волны изменился:', lastWaveColor, '→', newColor);
                         lastWaveColor = newColor;
                         if (currentTargetColor) {
-                            applyColorToCanvas(currentTargetColor);
+                            const track = window.pulsesyncApi?.getCurrentTrack();
+                            applyColorToCanvas(currentTargetColor, track?.id);
                         }
                     }
                 }
@@ -879,9 +938,183 @@
         debugLog('Наблюдение за цветом волны запущено');
     }
 
+    // ===================== КОНТЕКСТНОЕ МЕНЮ И ИСКЛЮЧЕНИЯ =====================
+
+    // ─── Запоминаем последнюю нажатую кнопку, открывающую меню ────────────
+    let lastContextMenuButton = null;
+
+    document.addEventListener('mousedown', (event) => {
+        const target = event.target.closest('[data-test-id*="CONTEXT_MENU_BUTTON"]');
+        if (target) {
+            lastContextMenuButton = target;
+            debugLog('Запомнена кнопка контекстного меню:', target);
+        }
+    }, true);
+
+    // ─── Универсальное получение trackId из любого источника ──────────────
+    function getTrackIdFromAnySource(sourceElement) {
+        if (!sourceElement) return null;
+
+        const trackContainer = sourceElement.closest('[class*="CommonTrack_root"]') ||
+                               sourceElement.closest('[class*="Track_root"]') ||
+                               sourceElement.closest('[data-track-id]');
+        if (trackContainer) {
+            const reactFiberProp = Object.keys(trackContainer).find(key => key.startsWith('__reactFiber'));
+            if (reactFiberProp) {
+                const fiber = trackContainer[reactFiberProp];
+                let node = fiber;
+                while (node) {
+                    const id = node.memoizedProps?.track?.id ||
+                               node.memoizedProps?.trackId ||
+                               node.memoizedProps?.id;
+                    if (id) return String(id);
+                    node = node.return;
+                }
+            }
+            const dataId = trackContainer.dataset.trackId ||
+                           trackContainer.dataset.intersectionPropertyId?.match(/track_(\d+)/)?.[1];
+            if (dataId) return String(dataId);
+        }
+
+        const anyTrack = sourceElement.closest('[data-track-id]');
+        if (anyTrack) {
+            const id = anyTrack.dataset.trackId;
+            if (id) return String(id);
+        }
+
+        if (sourceElement.closest('[data-test-id="PLAYERBAR_DESKTOP_CONTEXT_MENU_BUTTON"]') ||
+            sourceElement.closest('[data-test-id="FULLSCREEN_PLAYER_CONTEXT_MENU_BUTTON"]')) {
+            const entity = window.pulsesyncApi?.getCurrentTrack();
+            if (entity) return String(entity.id);
+        }
+
+        return null;
+    }
+
+    // ─── Создание пункта меню (клонирование шаблона) ──────────────────────
+    function createExclusionMenuItemFromClone(templateItem, trackId) {
+        const newItem = templateItem.cloneNode(true);
+        newItem.setAttribute('data-test-id', 'CONTEXT_MENU_EXCLUSION_BUTTON');
+        newItem.style.display = '';
+        // Запрещаем перенос текста
+        newItem.style.whiteSpace = 'nowrap';
+
+        const span = newItem.querySelector('span');
+        if (span) {
+            const iconSvg = span.querySelector('svg use');
+            const labelSpan = span.querySelector('.ContextMenuItem_label__PvJzQ') || span.childNodes[1];
+            const excluded = isExcluded(trackId);
+
+            if (iconSvg) {
+                iconSvg.setAttribute('xlink:href', `/icons/sprite.svg#${excluded ? 'check' : 'eye-off'}_xxs`);
+            }
+            if (labelSpan) {
+                // Короткий текст, чтобы помещался в одну строку
+                labelSpan.textContent = excluded ? 'Вкл. изм. цвет для трека' : 'Откл. изм. цвет для трека';
+            }
+        }
+
+        newItem.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleExclusion(trackId);
+            const newExcluded = isExcluded(trackId);
+            const span = newItem.querySelector('span');
+            if (span) {
+                const iconSvg = span.querySelector('svg use');
+                if (iconSvg) {
+                    iconSvg.setAttribute('xlink:href', `/icons/sprite.svg#${newExcluded ? 'check' : 'eye-off'}_xxs`);
+                }
+                const labelSpan = span.querySelector('.ContextMenuItem_label__PvJzQ') || span.childNodes[1];
+                if (labelSpan) {
+                    labelSpan.textContent = newExcluded ? 'Вкл. изм. цвет для трека' : 'Откл. изм. цвет для трека';
+                }
+            }
+        });
+
+        return newItem;
+    }
+
+    // ─── Вставка кнопки в меню ─────────────────────────────────────────────
+    function addExclusionButtonToMenu(menuElement, trackId) {
+        if (!settings.allowExclusion) return;
+        if (menuElement.querySelector('[data-test-id="CONTEXT_MENU_EXCLUSION_BUTTON"]')) return;
+
+        let templateItem = menuElement.querySelector('[data-test-id="CONTEXT_MENU_DOWNLOAD_BUTTON"]');
+        if (!templateItem) {
+            templateItem = menuElement.querySelector('[role="menuitem"]');
+        }
+        if (!templateItem) {
+            log('Не удалось найти шаблон пункта меню для клонирования');
+            return;
+        }
+
+        const newItem = createExclusionMenuItemFromClone(templateItem, trackId);
+        // Вставляем сразу после "Скачать" – так, чтобы наша кнопка шла следующей
+        templateItem.parentElement.insertBefore(newItem, templateItem.nextSibling);
+        debugLog('Кнопка исключения добавлена в меню для трека', trackId);
+    }
+
+    // ─── Наблюдатель за появлением меню ─────────────────────────────────────
+    const menuObserver = new MutationObserver(mutations => {
+        mutations.forEach(mutation => {
+            mutation.addedNodes.forEach(node => {
+                if (!(node instanceof HTMLElement)) return;
+
+                let menu = null;
+                if (node.matches('[data-test-id="VIBE_CONTEXT_MENU"], [data-test-id="TRACK_CONTEXT_MENU"]')) {
+                    menu = node;
+                } else {
+                    menu = node.querySelector('[data-test-id="VIBE_CONTEXT_MENU"], [data-test-id="TRACK_CONTEXT_MENU"]');
+                }
+                if (!menu) return;
+
+                if (menu.querySelector('[data-test-id="CONTEXT_MENU_EXCLUSION_BUTTON"]')) return;
+
+                let trackId = null;
+                const labelledBy = menu.getAttribute('aria-labelledby');
+                if (labelledBy) {
+                    const sourceButton = document.getElementById(labelledBy);
+                    if (sourceButton) {
+                        trackId = getTrackIdFromAnySource(sourceButton);
+                    }
+                }
+                if (!trackId && lastContextMenuButton && document.contains(lastContextMenuButton)) {
+                    trackId = getTrackIdFromAnySource(lastContextMenuButton);
+                }
+                if (!trackId) {
+                    const active = document.activeElement;
+                    if (active && active.closest('[data-test-id*="CONTEXT_MENU_BUTTON"]')) {
+                        trackId = getTrackIdFromAnySource(active);
+                    }
+                }
+                if (!trackId) {
+                    const entity = window.pulsesyncApi?.getCurrentTrack();
+                    if (entity) trackId = String(entity.id);
+                }
+
+                if (trackId) {
+                    addExclusionButtonToMenu(menu, trackId);
+                } else {
+                    debugLog('Не удалось определить trackId для меню', menu);
+                }
+            });
+        });
+    });
+
+    menuObserver.observe(document.body, { childList: true, subtree: true });
+
+    document.addEventListener('contextmenu', (event) => {
+        const target = event.target.closest('[data-test-id*="CONTEXT_MENU_BUTTON"]');
+        if (target) {
+            lastContextMenuButton = target;
+            debugLog('contextmenu: запомнена кнопка', target);
+        }
+    }, true);
+
     // ─── Инициализация ──────────────────────────────────────────────────────
     function init() {
         log('Инициализация...');
+        loadExclusions();
         loadSettings();
 
         const existingCanvas = getCanvas();
