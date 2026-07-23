@@ -8,8 +8,8 @@
                     "name": "Включить",
                     "description": "Включает/отключает автоматическую подстройку цвета волны.",
                     "type": "button",
-                    "bool": true,
-                    "defaultParameter": true
+                    "value": true,
+                    "defaultValue": true
                 },
                 {
                     "id": "intensity",
@@ -20,7 +20,7 @@
                     "max": 1,
                     "step": 0.05,
                     "value": 0.85,
-                    "defaultParameter": 0.85
+                    "defaultValue": 0.85
                 },
                 {
                     "id": "saturation",
@@ -30,8 +30,8 @@
                     "min": 0.5,
                     "max": 1.5,
                     "step": 0.05,
-                    "value": 1.0,
-                    "defaultParameter": 1.0
+                    "value": 1,
+                    "defaultValue": 1
                 },
                 {
                     "id": "brightness",
@@ -42,15 +42,37 @@
                     "max": 1.5,
                     "step": 0.05,
                     "value": 1.3,
-                    "defaultParameter": 1.3
+                    "defaultValue": 1.3
                 },
                 {
                     "id": "adaptiveBrightness",
                     "name": "Адаптивная яркость",
                     "description": "Автоматически регулировать яркость волны в зависимости от яркости обложки: светлые обложки → светлая волна, тёмные → тёмная волна.",
                     "type": "button",
-                    "bool": true,
-                    "defaultParameter": true
+                    "value": true,
+                    "defaultValue": true
+                },
+                {
+                    "id": "colorExtractionMethod",
+                    "name": "Метод извлечения цвета",
+                    "description": "Стандартный (сортировка по насыщенности), Сбалансированный (частота+насыщенность) или Альтернативный (гистограмма).",
+                    "type": "selector",
+                    "value": 1,
+                    "options": {
+                        "1": {
+                            "event": "default",
+                            "name": "Стандартный"
+                        },
+                        "2": {
+                            "event": "balanced",
+                            "name": "Сбалансированный"
+                        },
+                        "3": {
+                            "event": "alternative",
+                            "name": "Гистограммный"
+                        }
+                    },
+                    "defaultValue": 1
                 },
                 {
                     "id": "saturationPreference",
@@ -61,47 +83,50 @@
                     "max": 1,
                     "step": 0.05,
                     "value": 0.7,
-                    "defaultParameter": 0.7
+                    "defaultValue": 0.7000000000000001
                 },
                 {
-                    "id": "useAlternativeMethod",
-                    "name": "Использовать альтернативный метод извлечения цвета",
-                    "description": "Включите для использования гистограммного метода извлечения цвета из обложки трека.",
-                    "type": "button",
-                    "bool": false,
-                    "defaultParameter": false
+                    "id": "animationDuration",
+                    "name": "Длительность анимации",
+                    "description": "Время перехода при смене цвета (сек).",
+                    "type": "slider",
+                    "min": 0.1,
+                    "max": 1.5,
+                    "step": 0.05,
+                    "value": 0.6,
+                    "defaultValue": 0.6
                 },
                 {
                     "id": "specialNeutralHandling",
                     "name": "Спецобработка белых/чёрных/серых обложек",
                     "description": "Если включено, то для белых обложек волна становится светлее, для чёрных — отключается цвет (чёрно-белый эффект), для серых — слегка корректируется яркость. Если выключено — цвет волны не меняется для таких обложек.",
                     "type": "button",
-                    "bool": true,
-                    "defaultParameter": true
+                    "value": true,
+                    "defaultValue": true
                 },
                 {
                     "id": "preload",
                     "name": "Предзагрузка обложек",
                     "description": "Загружать обложки следующих треков в очереди для плавного перехода.",
                     "type": "button",
-                    "bool": true,
-                    "defaultParameter": true
+                    "value": true,
+                    "defaultValue": true
                 },
                 {
                     "id": "useFilterOnPause",
                     "name": "Не применять фильтр на паузе",
                     "description": "Если включено, то на паузе фильтр сбрасывается (волна возвращается к исходному цвету). Если выключено — фильтр остаётся активным даже на паузе.",
                     "type": "button",
-                    "bool": true,
-                    "defaultParameter": true
+                    "value": true,
+                    "defaultValue": true
                 },
                 {
                     "id": "debug",
                     "name": "Режим отладки",
                     "description": "Включает подробный вывод в консоль для диагностики.",
                     "type": "button",
-                    "bool": false,
-                    "defaultParameter": false
+                    "value": false,
+                    "defaultValue": false
                 }
             ]
         }
