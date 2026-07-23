@@ -5,8 +5,8 @@
   "libraryLogo": "",
   "author": "BackUndoTap",
   "description": "Адаптивно меняет цвет анимации «Моей волны» под обложку трека",
-  "version": "1.1.0",
-  "css": "style.css",
+  "version": "1.2.0",
+  "css": "",
   "script": "script.js",
   "type": "script",
   "tags": [
