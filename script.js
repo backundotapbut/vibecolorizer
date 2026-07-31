@@ -20,7 +20,7 @@
         enabled: true,
         intensity: 0.85,
         saturation: 1.0,
-        brightness: 1.3,
+        brightness: 1.0,
         adaptiveBrightness: true,
         colorExtractionMethod: 'default',
         saturationPreference: 0.7,
@@ -29,7 +29,8 @@
         preload: true,
         useFilterOnPause: true,
         debug: false,
-        allowExclusion: true
+        allowExclusion: true,
+        disableGradient: true
     };
 
     let settings = { ...DEFAULTS };
@@ -47,6 +48,9 @@
     let excludedTracks = new Set();
     let playStateDebounceTimer = null;
     let reapplyTimer = null;
+
+    // ─── Наблюдатель за фоном ──────────────────────────────────────────────
+    let gradientObserver = null;
 
     // ─── Хранилище исключённых треков ───────────────────────────────────────
     function loadExclusions() {
@@ -104,6 +108,7 @@
     function applySettings(newS) {
         const oldMethod = settings.colorExtractionMethod;
         const oldPref = settings.saturationPreference;
+        const oldDisableGradient = settings.disableGradient;
 
         settings.enabled = unwrap(newS.enabled, DEFAULTS.enabled);
         settings.intensity = unwrap(newS.intensity, DEFAULTS.intensity);
@@ -115,6 +120,8 @@
         settings.useFilterOnPause = unwrap(newS.useFilterOnPause, DEFAULTS.useFilterOnPause);
         settings.animationDuration = unwrap(newS.animationDuration, DEFAULTS.animationDuration);
         settings.saturationPreference = unwrap(newS.saturationPreference, DEFAULTS.saturationPreference);
+        settings.disableGradient = unwrap(newS.disableGradient, DEFAULTS.disableGradient);
+        settings.allowExclusion = unwrap(newS.allowExclusion, DEFAULTS.allowExclusion);
 
         let method = unwrap(newS.colorExtractionMethod, DEFAULTS.colorExtractionMethod);
         if (typeof method === 'number') {
@@ -133,6 +140,10 @@
             coverCache.clear();
             debugLog('Кеш обложек очищен');
             lastTrackId = null;
+        }
+
+        if (oldDisableGradient !== settings.disableGradient) {
+            applyGradientState();
         }
     }
 
@@ -452,6 +463,61 @@
         }
     }
 
+    // ─── Управление градиентом через фон ──────────────────────────────────
+    function applyGradientState() {
+        const root = getRootElement();
+        if (!root) {
+            debugLog('applyGradientState: корневой элемент не найден');
+            return;
+        }
+
+        if (settings.disableGradient) {
+            // Устанавливаем прозрачный фон (как в Custom Background)
+            root.style.setProperty('background', 'transparent', 'important');
+            debugLog('Градиент отключён (фон прозрачный)');
+            // Запускаем наблюдатель, чтобы сохранять состояние
+            startGradientObserver();
+        } else {
+            // Удаляем inline-стиль, возвращая оригинальный фон
+            root.style.removeProperty('background');
+            debugLog('Градиент восстановлен (фон удалён)');
+            stopGradientObserver();
+        }
+    }
+
+    // ─── Наблюдатель за изменениями фона ──────────────────────────────────
+    function startGradientObserver() {
+        if (gradientObserver) return;
+        const root = getRootElement();
+        if (!root) return;
+
+        gradientObserver = new MutationObserver(() => {
+            // Если настройка включена, принудительно устанавливаем прозрачный фон
+            if (settings.disableGradient) {
+                const computedBg = getComputedStyle(root).background;
+                // Если фон не прозрачный, переустанавливаем
+                if (computedBg !== 'rgba(0, 0, 0, 0)' && computedBg !== 'transparent') {
+                    root.style.setProperty('background', 'transparent', 'important');
+                    debugLog('Принудительно восстановлен прозрачный фон');
+                }
+            }
+        });
+
+        gradientObserver.observe(root, {
+            attributes: true,
+            attributeFilter: ['style']
+        });
+        debugLog('Наблюдатель за фоном запущен');
+    }
+
+    function stopGradientObserver() {
+        if (gradientObserver) {
+            gradientObserver.disconnect();
+            gradientObserver = null;
+            debugLog('Наблюдатель за фоном остановлен');
+        }
+    }
+
     // ─── Адаптивный расчёт фильтра ──────────────────────────────────────────
     function computeFilterValues(targetColor) {
         const defaultValues = { hue: 0, saturate: 1, brightness: 1 };
@@ -494,30 +560,33 @@
         if (settings.adaptiveBrightness) {
             const deltaLightness = (targetLightness - 0.5) * 0.8;
             if (targetLightness > 0.5) {
-                finalBright = Math.min(2.0, finalBright + deltaLightness);
+                const brightnessBoost = Math.min(2.0, finalBright + deltaLightness);
+                finalBright = Math.min(2.0, brightnessBoost);
+                const satReduction = (targetLightness - 0.5) * 0.6;
+                finalSaturate = Math.max(0.1, finalSaturate * (1 - satReduction));
             } else {
                 const darkFactor = 1 - (targetLightness / 0.5);
-                finalSaturate = Math.max(0.1, finalSaturate * (1 - darkFactor * 0.9));
-                finalBright = Math.max(0.5, finalBright);
+                finalBright = Math.max(0.5, finalBright - darkFactor * 0.5);
+                finalSaturate = Math.max(0.1, finalSaturate * (1 - darkFactor * 0.3));
             }
         }
 
         if (isWhite) {
             if (settings.specialNeutralHandling) {
-                finalBright = Math.min(2.0, finalBright * 2.0);
-                finalSaturate = Math.min(0.2, settings.saturation * 0.2);
+                finalBright = Math.min(2.0, settings.brightness + 0.3);
+                finalSaturate = Math.min(0.1, settings.saturation * 0.1);
                 finalHue = 0;
             } else return defaultValues;
         } else if (isBlack) {
             if (settings.specialNeutralHandling) {
-                finalBright = Math.max(0.4, finalBright * 0.5);
+                finalBright = Math.max(0.4, settings.brightness * 0.5);
                 finalSaturate = 0.1;
                 finalHue = 0;
             } else return defaultValues;
         } else if (isNeutral) {
             if (settings.specialNeutralHandling) {
-                finalBright = Math.min(1.4, Math.max(0.6, finalBright * (0.8 + targetLightness * 0.4)));
-                finalSaturate = Math.min(0.15, settings.saturation * 0.15);
+                finalBright = Math.min(1.6, Math.max(0.6, settings.brightness * (0.8 + targetLightness * 0.4)));
+                finalSaturate = Math.min(0.1, settings.saturation * 0.1);
                 finalHue = (absDelta > 5 && absDelta < 45) ? deltaH * 0.1 : 0;
             } else return defaultValues;
         } else {
@@ -525,9 +594,10 @@
         }
 
         finalHue = Math.min(360, Math.max(-360, finalHue));
-        finalBright = Math.min(2.0, Math.max(0.5, finalBright));
+        finalBright = Math.min(2.0, Math.max(0.4, finalBright));
         finalSaturate = Math.min(1.5, Math.max(0.1, finalSaturate));
 
+        debugLog('Итоговый фильтр:', { hue: finalHue, saturate: finalSaturate, brightness: finalBright });
         return { hue: finalHue, saturate: finalSaturate, brightness: finalBright };
     }
 
@@ -552,7 +622,7 @@
         }
     }
 
-    // ─── Применение фильтра (с CSS-переходом) ────────────────────────────
+    // ─── Применение фильтра к canvas ─────────────────────────────────────
     function applyFilterDirect(values) {
         const canvas = getCanvas();
         if (!canvas) {
@@ -594,8 +664,18 @@
             return;
         }
 
-        if (shouldFilterBeCleared() || !settings.enabled || !targetColor) {
+        if (shouldFilterBeCleared()) {
             clearFilter();
+            return;
+        }
+
+        if (!settings.enabled) {
+            clearFilter();
+            return;
+        }
+
+        if (!targetColor) {
+            debugLog('Нет целевого цвета, оставляем текущий фильтр');
             return;
         }
 
@@ -628,6 +708,8 @@
                 } else {
                     applyColorToCanvas(null);
                 }
+                // При смене трека также убеждаемся в состоянии градиента
+                applyGradientState();
             } catch (e) {
                 warn('Ошибка в reapplyFilter:', e);
             }
@@ -980,6 +1062,9 @@
         log('Инициализация...');
         loadExclusions();
         loadSettings();
+
+        // Применяем начальное состояние градиента
+        applyGradientState();
 
         const findAndInit = () => {
             const canvas = getCanvas();
