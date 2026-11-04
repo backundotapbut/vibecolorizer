@@ -1,42 +1,162 @@
 {
     "sections": [
         {
-            "title": "VibeColorizer",
+            "title": "Режим работы",
             "items": [
                 {
-                    "id": "enabled",
-                    "name": "Включить",
-                    "description": "Включает/отключает автоматическую подстройку цвета волны.",
+                    "id": "patchInstalled",
+                    "name": "Патч установлен (patch-vibe-colors.js)",
+                    "description": "Установили ли вы патч для волны? Если ДА — в режиме Auto будет 6 цветов. Если НЕТ — 1 цвет.",
+                    "type": "button",
+                    "value": false,
+                    "defaultValue": false
+                },
+                {
+                    "id": "colorMode",
+                    "name": "Режим цвета волны",
+                    "description": "Auto = 6 цветов если патч есть, иначе 1 цвет. Multi = принудительно 6 (нужен патч). Mono = принудительно 1 цвет.",
+                    "type": "selector",
+                    "value": "auto",
+                    "options": {
+                        "auto": { "event": "auto", "name": "Auto (по настройке патча) ⭐" },
+                        "multi": { "event": "multi", "name": "Многоцветный (6 стопов) — требует патч" },
+                        "mono": { "event": "mono", "name": "Однотонный (1 цвет) — работает без патча" }
+                    },
+                    "defaultValue": "auto"
+                },
+                {
+                    "id": "restoreOnPause",
+                    "name": "Возврат к стандартным цветам на паузе",
+                    "description": "Когда ставите музыку на паузу — волна возвращается к исходным цветам. При воспроезде — ваши цвета применяются снова.",
                     "type": "button",
                     "value": true,
                     "defaultValue": true
                 },
                 {
-                    "id": "intensity",
-                    "name": "Максимальная интенсивность",
-                    "description": "Максимальная сила изменения цвета (0 = выкл, 1 = полное изменение). Адаптивно снижается, если цвет уже близок.",
+                    "id": "enabled",
+                    "name": "Включить VibeColorizer",
+                    "description": "Включает/выключает подмену палитры волны цветами обложки.",
+                    "type": "button",
+                    "value": true,
+                    "defaultValue": true
+                }
+            ]
+        },
+        {
+            "title": "Извлечение цветов",
+            "items": [
+                {
+                    "id": "colorCount",
+                    "name": "Количество цветов",
+                    "description": "Сколько доминантных цветов брать (1–6). В однотонном режиме используется только первый.",
                     "type": "slider",
-                    "min": 0,
-                    "max": 1,
-                    "step": 0.05,
-                    "value": 0.85,
-                    "defaultValue": 0.85
+                    "min": 1,
+                    "max": 6,
+                    "step": 1,
+                    "value": 6,
+                    "defaultValue": 6
                 },
                 {
-                    "id": "saturation",
-                    "name": "Насыщенность волны",
-                    "description": "Дополнительная насыщенность (1 = оригинальная, >1 = более насыщенная).",
+                    "id": "colorAlgorithm",
+                    "name": "Алгоритм выбора",
+                    "description": "Приоритет тёплых — оранжево-жёлтые (15–60°) идут первыми, потом зелёные (60–180°), потом остальные.",
+                    "type": "selector",
+                    "value": "huePriority",
+                    "options": {
+                        "huePriority": { "event": "huePriority", "name": "Приоритет тёплых оттенков (оранж/жёлт → зелёные → остальные) ⭐" },
+                        "weight": { "event": "weight", "name": "Взвешенный (частота × насыщенность)" },
+                        "saturation": { "event": "saturation", "name": "По насыщенности (самые яркие)" },
+                        "frequency": { "event": "frequency", "name": "По частоте (самые частые пиксели)" },
+                        "cluster": { "event": "cluster", "name": "По размеру кластера" }
+                    },
+                    "defaultValue": "huePriority"
+                },
+                {
+                    "id": "saturationThreshold",
+                    "name": "Мин. насыщенность",
+                    "description": "Порог отсечения серых (0–0.5). 0.05 = пропускать бледные цвета. 0 = не отбрасывать.",
+                    "type": "slider",
+                    "min": 0,
+                    "max": 0.5,
+                    "step": 0.01,
+                    "value": 0.05,
+                    "defaultValue": 0.05
+                },
+                {
+                    "id": "lightnessMin",
+                    "name": "Мин. яркость",
+                    "description": "Нижняя граница светлости. Чёрный (l≤0.03) отсекается принудительно.",
+                    "type": "slider",
+                    "min": 0,
+                    "max": 0.3,
+                    "step": 0.01,
+                    "value": 0.03,
+                    "defaultValue": 0.03
+                },
+                {
+                    "id": "lightnessMax",
+                    "name": "Макс. яркость",
+                    "description": "Верхняя граница. 0.98 = пропускать почти белые. Для белых обложек ставьте 0.99–1.0.",
+                    "type": "slider",
+                    "min": 0.8,
+                    "max": 1,
+                    "step": 0.01,
+                    "value": 0.98,
+                    "defaultValue": 0.98
+                },
+                {
+                    "id": "quantizationLevel",
+                    "name": "Квантование",
+                    "description": "Точность группировки пикселей (4–16).",
+                    "type": "slider",
+                    "min": 4,
+                    "max": 16,
+                    "step": 1,
+                    "value": 8,
+                    "defaultValue": 8
+                },
+                {
+                    "id": "clusterThreshold",
+                    "name": "Кластеризация (°)",
+                    "description": "Макс. разница оттенков для объединения в кластер.",
+                    "type": "slider",
+                    "min": 10,
+                    "max": 60,
+                    "step": 5,
+                    "value": 30,
+                    "defaultValue": 30
+                }
+            ]
+        },
+        {
+            "title": "Коррекция цветов",
+            "items": [
+                {
+                    "id": "hueRotation",
+                    "name": "Поворот оттенка (°)",
+                    "description": "Сдвиг всей палитры по цветовому кругу.",
+                    "type": "slider",
+                    "min": -180,
+                    "max": 180,
+                    "step": 5,
+                    "value": 0,
+                    "defaultValue": 0
+                },
+                {
+                    "id": "saturationBoost",
+                    "name": "Усиление насыщенности",
+                    "description": "Множитель насыщенности (>1 = ярче).",
                     "type": "slider",
                     "min": 0.5,
                     "max": 1.5,
                     "step": 0.05,
-                    "value": 1,
-                    "defaultValue": 1
+                    "value": 1.1,
+                    "defaultValue": 1.1
                 },
                 {
-                    "id": "brightness",
-                    "name": "Базовая яркость волны",
-                    "description": "Базовая яркость волны. К ней добавляется адаптивная коррекция (если включена).",
+                    "id": "lightnessBoost",
+                    "name": "Усиление яркости",
+                    "description": "Множитель яркости.",
                     "type": "slider",
                     "min": 0.5,
                     "max": 1.5,
@@ -45,93 +165,150 @@
                     "defaultValue": 1.0
                 },
                 {
-                    "id": "adaptiveBrightness",
+                    "id": "transitionDuration",
+                    "name": "Длительность перехода (сек)",
+                    "description": "Время анимации смены цвета.",
+                    "type": "slider",
+                    "min": 0.1,
+                    "max": 2,
+                    "step": 0.1,
+                    "value": 0.5,
+                    "defaultValue": 0.5
+                }
+            ]
+        },
+        {
+            "title": "Однотонный режим (настройки фильтра)",
+            "items": [
+                {
+                    "id": "monotoneMethod",
+                    "name": "Метод извлечения",
+                    "description": "Алгоритм выбора одного цвета (из старого аддона).",
+                    "type": "selector",
+                    "value": "default",
+                    "options": {
+                        "default": { "event": "default", "name": "Default — топ-% по насыщенности" },
+                        "balanced": { "event": "balanced", "name": "Balanced — корзины по hue" },
+                        "alternative": { "event": "alternative", "name": "Alternative — гистограмма" }
+                    },
+                    "defaultValue": "default"
+                },
+                {
+                    "id": "monotoneIntensity",
+                    "name": "Интенсивность hue-rotate",
+                    "description": "Сила поворота оттенка (0.1–1).",
+                    "type": "slider",
+                    "min": 0.1,
+                    "max": 1,
+                    "step": 0.05,
+                    "value": 0.85,
+                    "defaultValue": 0.85
+                },
+                {
+                    "id": "monotoneSaturation",
+                    "name": "Насыщенность фильтра",
+                    "description": "Множитель saturate().",
+                    "type": "slider",
+                    "min": 0.2,
+                    "max": 1.5,
+                    "step": 0.05,
+                    "value": 1.0,
+                    "defaultValue": 1.0
+                },
+                {
+                    "id": "monotoneBrightness",
+                    "name": "Яркость фильтра",
+                    "description": "Множитель brightness().",
+                    "type": "slider",
+                    "min": 0.4,
+                    "max": 2,
+                    "step": 0.05,
+                    "value": 1.0,
+                    "defaultValue": 1.0
+                },
+                {
+                    "id": "monotoneAdaptiveBrightness",
                     "name": "Адаптивная яркость",
-                    "description": "Автоматически регулировать яркость волны в зависимости от яркости обложки: светлые обложки → светлая волна, тёмные → тёмная волна.",
+                    "description": "Авто-коррекция под целевой цвет.",
                     "type": "button",
                     "value": true,
                     "defaultValue": true
                 },
                 {
-                    "id": "colorExtractionMethod",
-                    "name": "Метод извлечения цвета",
-                    "description": "Стандартный (сортировка по насыщенности), Сбалансированный (частота+насыщенность) или Альтернативный (гистограмма).",
-                    "type": "selector",
-                    "value": 1,
-                    "options": {
-                        "1": {
-                            "event": "default",
-                            "name": "Стандартный"
-                        },
-                        "2": {
-                            "event": "balanced",
-                            "name": "Сбалансированный"
-                        },
-                        "3": {
-                            "event": "alternative",
-                            "name": "Гистограммный"
-                        }
-                    },
-                    "defaultValue": 1
+                    "id": "monotoneSpecialNeutralHandling",
+                    "name": "Спец. режим для нейтральных",
+                    "description": "Особая обработка белого/чёрного/серого.",
+                    "type": "button",
+                    "value": true,
+                    "defaultValue": true
                 },
                 {
-                    "id": "saturationPreference",
+                    "id": "monotoneSaturationPreference",
                     "name": "Предпочтение насыщенности",
-                    "description": "Подробности в README.",
+                    "description": "Баланс частота/насыщенность (0–1).",
                     "type": "slider",
                     "min": 0,
                     "max": 1,
                     "step": 0.05,
                     "value": 0.7,
-                    "defaultValue": 0.7000000000000001
+                    "defaultValue": 0.7
                 },
                 {
-                    "id": "animationDuration",
-                    "name": "Длительность анимации",
-                    "description": "Время перехода при смене цвета (сек).",
-                    "type": "slider",
-                    "min": 0.1,
-                    "max": 1.5,
-                    "step": 0.05,
-                    "value": 0.6,
-                    "defaultValue": 0.6
+                    "id": "fullHueIntensity",
+                    "name": "Полная интенсивность hue-rotate",
+                    "description": "Не снижать интенсивность поворота оттенка для больших разностей (точный цвет). ВЫКЛ = сглаживать переходы.",
+                    "type": "button",
+                    "value": true,
+                    "defaultValue": true
+                }
+            ]
+        },
+        {
+            "title": "Прочее",
+            "items": [
+                {
+                    "id": "legacyMode",
+                    "name": "Legacy фоллбэк",
+                    "description": "Что делать если multi запрошен, но патча нет.",
+                    "type": "selector",
+                    "value": "auto",
+                    "options": {
+                        "auto": { "event": "auto", "name": "Авто — переключиться на монотонный" },
+                        "never": { "event": "never", "name": "Никогда — не менять цвет" }
+                    },
+                    "defaultValue": "auto"
                 },
                 {
-                    "id": "specialNeutralHandling",
-                    "name": "Спецобработка белых/чёрных/серых обложек",
-                    "description": "Если включено, то для белых обложек волна становится светлее, для чёрных — отключается цвет (чёрно-белый эффект), для серых — слегка корректируется яркость. Если выключено — цвет волны не меняется для таких обложек.",
+                    "id": "disableGradient",
+                    "name": "Прозрачный фон волны (убрать градиент)",
+                    "description": "Делает фон волны полностью прозрачным (background: transparent). Полезно если градиент мешает.",
                     "type": "button",
                     "value": true,
                     "defaultValue": true
                 },
-				{
-					"id": "disableGradient",
-					"name": "Отключить градиент волны",
-					"description": "Сделать фон блока «Моя волна» полностью чёрным, убрав цветовой градиент. Фильтр по обложке продолжает работать.",
-					"type": "button",
-					"bool": true,
-					"defaultParameter": true
-				},
                 {
-                    "id": "preload",
+                    "id": "preloadCovers",
                     "name": "Предзагрузка обложек",
-                    "description": "Загружать обложки следующих треков в очереди для плавного перехода.",
+                    "description": "Загружать следующий трек заранее.",
                     "type": "button",
                     "value": true,
                     "defaultValue": true
                 },
                 {
-                    "id": "useFilterOnPause",
-                    "name": "Не применять фильтр на паузе",
-                    "description": "Если включено, то на паузе фильтр сбрасывается (волна возвращается к исходному цвету). Если выключено — фильтр остаётся активным даже на паузе.",
-                    "type": "button",
-                    "value": true,
-                    "defaultValue": true
+                    "id": "maxCacheSize",
+                    "name": "Размер кэша",
+                    "description": "Макс. кэшируемых палитр.",
+                    "type": "slider",
+                    "min": 20,
+                    "max": 300,
+                    "step": 10,
+                    "value": 120,
+                    "defaultValue": 120
                 },
                 {
                     "id": "debug",
                     "name": "Режим отладки",
-                    "description": "Включает подробный вывод в консоль для диагностики.",
+                    "description": "Логи в консоли (F12).",
                     "type": "button",
                     "value": false,
                     "defaultValue": false

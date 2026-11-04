@@ -1,26 +1,20 @@
 {
-  "name": "VibeColorizer",
-  "image": "image.jpg",
-  "banner": "banner.jpg",
-  "libraryLogo": "",
-  "author": "BackUndoTap",
-  "description": "Адаптивно меняет цвет анимации «Моей волны» под обложку трека",
-  "version": "1.2.1",
-  "css": "",
-  "script": "script.js",
-  "type": "script",
-  "tags": [
-    "vibe",
-    "wave",
-    "color"
-  ],
-  "dependencies": [],
-  "conflictsWith": [],
-  "allowedUrls": [
-    "https://avatars.yandex.net"
-  ],
-  "supportedVersions": [],
-  "id": "vibecolorizer-final-001",
-  "installSource": "local",
-  "fromPext": false
+    "name": "VibeColorizer",
+    "image": "image.jpg",
+    "banner": "banner.jpg",
+    "libraryLogo": "",
+    "author": "BackUndoTap",
+    "description": "Заменяет палитру анимации «Волны» на доминантные цвета обложки. Legacy-совместимость без патча, предзагрузка обложек. ⚠️ 6-цветной режим требует patch-vibe-colors.js.",
+    "version": "2.0.0",
+    "css": "",
+    "script": "script.js",
+    "type": "script",
+    "tags": ["vibe", "wave", "color"],
+    "dependencies": [],
+    "conflictsWith": [],
+    "allowedUrls": ["https://avatars.yandex.net"],
+    "supportedVersions": [],
+    "id": "vibecolorizer",
+    "installSource": "local",
+    "fromPext": false
 }
