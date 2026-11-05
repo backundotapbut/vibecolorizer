@@ -1,5 +1,8 @@
 # VibeColorizer
 
+## БОНУС
+### Все полезные скрипты для Pulsesync можно найти [здесь](https://github.com/backundotapbut/Pulsesync-Patches) 
+
 ## Что это?
 Аддон для модификации Яндекс музыки [PulseSync](https://github.com/PulseSync-LLC/PulseSync-client)
 
